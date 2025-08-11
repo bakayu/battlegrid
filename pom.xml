@@ -70,7 +70,6 @@
                 <version>5.13.4</version>
                 <scope>test</scope>
             </dependency>
-        </dependencies>
         <!-- JUnit for testing -->
         <!-- https://mvnrepository.com/artifact/org.junit.jupiter/junit-jupiter-api -->
         <dependency>
