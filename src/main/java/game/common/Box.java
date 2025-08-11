@@ -2,12 +2,13 @@ package game.common;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
 import javax.crypto.Cipher;
 import java.security.*;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
-
 /**
  * A Wrapper Class for sending data between client and server.
  * It uses JsonObject for flexible data storage and includes a simple encryption/decryption mechanism.
@@ -18,13 +19,7 @@ public class Box {
 
     // main data payload.
     private JsonObject payload;
-
-    // Static initializer to add Bouncy Castle as a security provider.
-    static {
-        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-            Security.addProvider(new BouncyCastleProvider());
-        }
-    }
+    
     // default constructor
     public Box() {
         this.payload = new JsonObject();
@@ -52,7 +47,7 @@ public class Box {
      * @throws NoSuchProviderException  if the Bouncy Castle provider is not available.
      */
     public static KeyPair generateKeyPair() throws NoSuchAlgorithmException, NoSuchProviderException {
-        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("RSA", "BC");
+        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("RSA");
         keyPairGenerator.initialize(2048); // 2048-bit key size is standard
         return keyPairGenerator.generateKeyPair();
     }
@@ -66,7 +61,7 @@ public class Box {
      * @throws GeneralSecurityException if an encryption error occurs.
      */
     public static byte[] encrypt(byte[] data, PublicKey publicKey) throws GeneralSecurityException {
-        Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding", "BC");
+        Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
         cipher.init(Cipher.ENCRYPT_MODE, publicKey);
         return cipher.doFinal(data);
     }
@@ -80,7 +75,7 @@ public class Box {
      * @throws GeneralSecurityException if a decryption error occurs.
      */
     public static byte[] decrypt(byte[] data, PrivateKey privateKey) throws GeneralSecurityException {
-        Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding", "BC");
+        Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
         cipher.init(Cipher.DECRYPT_MODE, privateKey);
         return cipher.doFinal(data);
     }
