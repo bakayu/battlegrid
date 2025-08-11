@@ -35,14 +35,17 @@ public class GameClient {
     }
 
     public static void main(String[] args) {
+        Scanner scanner = new Scanner(System.in);
+        System.out.print("Enter the server IP address: ");
+        String serverIp = scanner.nextLine();
+
         try {
             WebSocketContainer container = ContainerProvider.getWebSocketContainer();
-            URI uri = new URI("ws://localhost:8025/websockets/battlegrid");
+            URI uri = new URI(serverIp);
             GameClient client = new GameClient();
             container.connectToServer(client, uri);
 
             System.out.println("Connected. Type messages and press Enter to send. Type 'exit' to quit.");
-            Scanner scanner = new Scanner(System.in);
             String input;
             do {
                 input = scanner.nextLine();
@@ -52,8 +55,7 @@ public class GameClient {
             } while (!"exit".equalsIgnoreCase(input));
 
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("Connection failed: " + e.getMessage());
         }
     }
 }
-
