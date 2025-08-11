@@ -2,7 +2,10 @@ package game.common;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
+import javax.crypto.Cipher;
+import java.security.*;
 import java.util.Base64;
 
 /**
@@ -16,10 +19,12 @@ public class Box {
     // main data payload.
     private JsonObject payload;
 
-    // A simple "encryption" key.
-    // TODO: This is for DEMO ONLY, handle properly in PRODUCTION.
-    private static final byte[] SECRET_KEY = "this-is-a-demo-private-key".getBytes();
-
+    // Static initializer to add Bouncy Castle as a security provider.
+    static {
+        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
+            Security.addProvider(new BouncyCastleProvider());
+        }
+    }
     // default constructor
     public Box() {
         this.payload = new JsonObject();
@@ -40,53 +45,78 @@ public class Box {
 
 
     /**
-     * A Simple XOR-based encryption method.
+     * Generates an RSA key pair.
      *
-     * @param data The byte array to encrypt.
-     * @return The encrypted byte array.
+     * @return a KeyPair object containing the public and private keys.
+     * @throws NoSuchAlgorithmException if the RSA algorithm is not available.
+     * @throws NoSuchProviderException  if the Bouncy Castle provider is not available.
      */
-    // TODO: This is for DEMO ONLY, use a cryptographically secure method later.
-    private byte[] encrypt(byte[] data) {
-        byte[] output = new byte[data.length];
-        for (int i = 0; i < data.length; i++) {
-            output[i] = (byte) (data[i] ^ SECRET_KEY[i % SECRET_KEY.length]);
-        }
-        return output;
+    public static KeyPair generateKeyPair() throws NoSuchAlgorithmException, NoSuchProviderException {
+        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("RSA", "BC");
+        keyPairGenerator.initialize(2048); // 2048-bit key size is standard
+        return keyPairGenerator.generateKeyPair();
     }
 
     /**
-     * Decrypts data using XOR-based encryption.
+     * Encrypts data using the provided RSA public key.
      *
-     * @param data The byte array to decrypt.
-     * @return The decrypted byte array.
+     * @param data      The byte array to encrypt.
+     * @param publicKey The public key of the recipient.
+     * @return The encrypted byte array.
+     * @throws GeneralSecurityException if an encryption error occurs.
      */
-    private byte[] decrypt(byte[] data) {
-        // XOR-based decryption, same as method `encrypt`.
-        return encrypt(data);
+    public static byte[] encrypt(byte[] data, PublicKey publicKey) throws GeneralSecurityException {
+        Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding", "BC");
+        cipher.init(Cipher.ENCRYPT_MODE, publicKey);
+        return cipher.doFinal(data);
+    }
+
+    /**
+     * Decrypts data using the provided RSA private key.
+     *
+     * @param data       The byte array to decrypt.
+     * @param privateKey The private key of the recipient.
+     * @return The decrypted byte array.
+     * @throws GeneralSecurityException if a decryption error occurs.
+     */
+    public static byte[] decrypt(byte[] data, PrivateKey privateKey) throws GeneralSecurityException {
+        Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding", "BC");
+        cipher.init(Cipher.DECRYPT_MODE, privateKey);
+        return cipher.doFinal(data);
     }
 
     /**
      * Converts the Box object to an encrypted, Base64-encoded JSON String for transmission.
      *
+     * @param publicKey The public key of the recipient.
      * @return An encrypted, Based64-encoded representation of the object.
      */
-    public String toEncryptedString() {
-        String jsonString = gson.toJson(this.payload);
-        byte[] encryptedString = encrypt(jsonString.getBytes());
-        return Base64.getEncoder().encodeToString(encryptedString);
+    public String toEncryptedString(PublicKey publicKey) {
+        try {
+            String jsonString = gson.toJson(this.payload);
+            byte[] encryptedBytes = encrypt(jsonString.getBytes(), publicKey);
+            return Base64.getEncoder().encodeToString(encryptedBytes);
+        } catch (GeneralSecurityException e) {
+            throw new RuntimeException("Encryption failed", e);
+        }
     }
 
     /**
      * Creates a Box object from an encrypted, Base64-encoded JSON string.
      *
      * @param encryptedString The string received from over the network.
+     * @param privateKey      The private key of the recipient.
      * @return A new Box object with the decrypted payload.
      */
-    public static Box fromEncryptedString(String encryptedString) {
-        byte[] decodedBytes = Base64.getDecoder().decode(encryptedString);
-        byte[] decryptedBytes = new Box().decrypt(decodedBytes);
-        String jsonString = new String(decryptedBytes);
-        JsonObject payload = gson.fromJson(jsonString, JsonObject.class);
-        return new Box(payload);
+    public static Box fromEncryptedString(String encryptedString, PrivateKey privateKey) {
+        try {
+            byte[] decodedBytes = Base64.getDecoder().decode(encryptedString);
+            byte[] decryptedBytes = decrypt(decodedBytes, privateKey);
+            String jsonString = new String(decryptedBytes);
+            JsonObject payload = gson.fromJson(jsonString, JsonObject.class);
+            return new Box(payload);
+        } catch (GeneralSecurityException e) {
+            throw new RuntimeException("Decryption failed", e);
+        }
     }
 }

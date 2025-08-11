@@ -49,9 +49,20 @@
             <artifactId>gson</artifactId>
             <version>2.13.1</version>
         </dependency>
-    </dependencies>
+    <!-- Bouncy Castle for cryptographic utilities -->
+    <dependency>
+        <groupId>org.bouncycastle</groupId>
+        <artifactId>bcpkix-jdk18on</artifactId>
+        <version>1.78</version>
+    </dependency>
+    <dependency>
+        <groupId>org.bouncycastle</groupId>
+        <artifactId>bcprov-jdk18on</artifactId>
+        <version>1.78</version>
+    </dependency>
+</dependencies>
 
-    <build>
+<build>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
