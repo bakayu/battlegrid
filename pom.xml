@@ -14,6 +14,7 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <tyrus.version>2.2.0</tyrus.version>
+        <exec.mainClass/>
     </properties>
 
     <dependencies>
@@ -53,6 +54,15 @@
                     <target>21</target>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <mainClass>${exec.mainClass}</mainClass>
+                </configuration>
+            </plugin>
+
         </plugins>
     </build>
 
