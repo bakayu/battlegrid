@@ -24,6 +24,7 @@ public class ServerRunner {
                 if (ni.isLoopback() || !ni.isUp()) {
                     continue;
                 }
+                
                 Enumeration<InetAddress> inetAddresses = ni.getInetAddresses();
                 while (inetAddresses.hasMoreElements()) {
                     InetAddress inetAddress = inetAddresses.nextElement();
