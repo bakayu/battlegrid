@@ -7,36 +7,41 @@ import jakarta.websocket.OnOpen;
 import jakarta.websocket.Session;
 import jakarta.websocket.WebSocketContainer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.net.URI;
 import java.util.Scanner;
 
 @ClientEndpoint
 public class GameClient {
 
+    private static final Logger logger = LoggerFactory.getLogger(GameClient.class);
+
     private Session session;
 
     @OnOpen
     public void onOpen(Session session) {
-        System.out.println("Connected to battlegrid server!");
+        logger.info("Connected to battlegrid server!");
         this.session = session;
     }
 
     @OnMessage
     public void onMessage(String message) {
-        System.out.println("Server> " + message);
+        logger.info("Server> {}", message);
     }
 
     public void sendMessage(String message) {
         try {
             session.getBasicRemote().sendText(message);
         } catch (Exception e) {
-            e.printStackTrace();
+            logger.error("Failed to send message: {}", message, e);
         }
     }
 
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
-        System.out.print("Enter the server IP address: ");
+        logger.info("Enter the server IP address: ");
         String serverIp = scanner.nextLine();
 
         try {
@@ -45,7 +50,7 @@ public class GameClient {
             GameClient client = new GameClient();
             container.connectToServer(client, uri);
 
-            System.out.println("Connected. Type messages and press Enter to send. Type 'exit' to quit.");
+            logger.info("Connected. Type messages and press Enter to send. Type 'exit' to quit.");
             String input;
             do {
                 input = scanner.nextLine();
@@ -55,7 +60,7 @@ public class GameClient {
             } while (!"exit".equalsIgnoreCase(input));
 
         } catch (Exception e) {
-            System.err.println("Connection failed: " + e.getMessage());
+            logger.error("Connection failed.", e);
         }
     }
 }
