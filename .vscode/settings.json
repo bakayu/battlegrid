@@ -1,0 +1,8 @@
+{
+    // Java settings for vscode
+    "[java]": {
+        "editor.defaultFormatter": "redhat.java",
+        "editor.formatOnSave": true,
+        "editor.suggest.snippetsPreventQuickSuggestions": false
+    }
+}
