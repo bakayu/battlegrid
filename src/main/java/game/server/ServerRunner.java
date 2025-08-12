@@ -29,11 +29,12 @@ public class ServerRunner {
                 if (ni.isLoopback() || !ni.isUp()) {
                     continue;
                 }
-
+                
                 Enumeration<InetAddress> inetAddresses = ni.getInetAddresses();
                 while (inetAddresses.hasMoreElements()) {
                     InetAddress inetAddress = inetAddresses.nextElement();
-                    if (inetAddress instanceof Inet4Address && !inetAddress.isLoopbackAddress() && inetAddress.isSiteLocalAddress()) {
+                    if (inetAddress instanceof Inet4Address && !inetAddress.isLoopbackAddress()
+                            && inetAddress.isSiteLocalAddress()) {
                         return inetAddress.getHostAddress();
                     }
                 }
@@ -62,6 +63,7 @@ public class ServerRunner {
         } catch (Exception e) {
             logger.error("An error occurred during server operation.", e);
         } finally {
+            server.stop();
             logger.info("Server stopped.");
         }
     }

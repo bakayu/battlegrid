@@ -1,17 +1,22 @@
 package game.client;
 
+import java.net.URI;
+import java.security.PublicKey;
+import java.util.Base64;
+import java.util.Scanner;
+import javax.crypto.SecretKey;
+import com.google.gson.JsonObject;
+import game.common.Box;
+import game.common.BoxCodec;
+import game.common.CryptoUtils;
 import jakarta.websocket.ClientEndpoint;
 import jakarta.websocket.ContainerProvider;
 import jakarta.websocket.OnMessage;
 import jakarta.websocket.OnOpen;
 import jakarta.websocket.Session;
 import jakarta.websocket.WebSocketContainer;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.net.URI;
-import java.util.Scanner;
 
 @ClientEndpoint
 public class GameClient {
@@ -19,48 +24,108 @@ public class GameClient {
     private static final Logger logger = LoggerFactory.getLogger(GameClient.class);
 
     private Session session;
+    private SecretKey aesKey;
+    private boolean handshakeComplete = false;
+    private String username;
 
     @OnOpen
     public void onOpen(Session session) {
         logger.info("Connected to battlegrid server!");
         this.session = session;
+        logger.info("Connection established. Waiting for server handshake...");
     }
 
     @OnMessage
     public void onMessage(String message) {
-        logger.info("Server> {}", message);
+        try {
+            if (!handshakeComplete) {
+                // This is the first message: the server's public RSA key
+                Box handshakeBox = new BoxCodec().decode(message);
+                String serverRsaPublicKeyStr = handshakeBox.getPayload().get("publicKey").getAsString();
+                PublicKey serverRsaPublicKey = CryptoUtils.stringToPublicKey(serverRsaPublicKeyStr);
+
+                // AES Key is generated, encrypted with server's public RSA key, and finally
+                // sent back
+                this.aesKey = CryptoUtils.generateAESKey();
+                byte[] encryptedAesKey = CryptoUtils.rsaEncrypt(aesKey.getEncoded(), serverRsaPublicKey);
+
+                // Send the encrypted key as a Base64 string
+                session.getBasicRemote().sendText(Base64.getEncoder().encodeToString(encryptedAesKey));
+
+                handshakeComplete = true;
+                logger.info("Handshake complete. You are now securely connected as {}!", this.username);
+                logger.info("Type messages and press Enter to send. Type 'exit' to quit.");
+
+            } else {
+                // Subsequent messages are AES-encrypted game data
+                byte[] decryptedBytes = CryptoUtils.aesDecrypt(Base64.getDecoder().decode(message), this.aesKey);
+                String decryptedJson = new String(decryptedBytes);
+                Box incomingBox = new BoxCodec().decode(decryptedJson);
+                logger.info("Server> {}", incomingBox.getPayload());
+            }
+        } catch (Exception e) {
+            logger.error("Error processing message from server.", e);
+        }
     }
 
     public void sendMessage(String message) {
+        if (!handshakeComplete) {
+            logger.warn("Cannot send message, handshake is not complete.");
+            return;
+        }
         try {
-            session.getBasicRemote().sendText(message);
+            // Create a payload, then encrypt it with AES before sending.
+            JsonObject payload = new JsonObject();
+            payload.addProperty("type", "chat");
+            payload.addProperty("text", message);
+
+            String jsonPayload = new BoxCodec().encode(new Box(payload));
+            byte[] encryptedPayload = CryptoUtils.aesEncrypt(jsonPayload.getBytes(), this.aesKey);
+            session.getBasicRemote().sendText(Base64.getEncoder().encodeToString(encryptedPayload));
+
         } catch (Exception e) {
             logger.error("Failed to send message: {}", message, e);
         }
     }
 
+    public void setUsername(String username) {
+        this.username = username;
+    }
+
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
-        logger.info("Enter the server IP address: ");
+        logger.info("Enter the server IP address (e.g., 192.168.1.5 or localhost): ");
         String serverIp = scanner.nextLine();
 
+        logger.info("Enter your username (or press Enter for default): ");
+        String usernameInput = scanner.nextLine();
+
         try {
-            WebSocketContainer container = ContainerProvider.getWebSocketContainer();
-            URI uri = new URI(serverIp);
             GameClient client = new GameClient();
+
+            if (usernameInput == null || usernameInput.trim().isEmpty()) {
+                client.setUsername("Player" + (int) (Math.random() * 1000)); // Simple default
+            } else {
+                client.setUsername(usernameInput);
+            }
+
+            WebSocketContainer container = ContainerProvider.getWebSocketContainer();
+            URI uri = new URI("ws://" + serverIp + ":8025/websockets/battlegrid");
             container.connectToServer(client, uri);
 
-            logger.info("Connected. Type messages and press Enter to send. Type 'exit' to quit.");
+            // This is handled by the onMessage() method after handshake
             String input;
             do {
                 input = scanner.nextLine();
-                if (!"exit".equalsIgnoreCase(input)) {
+                if (client.handshakeComplete && !"exit".equalsIgnoreCase(input)) {
                     client.sendMessage(input);
                 }
             } while (!"exit".equalsIgnoreCase(input));
 
         } catch (Exception e) {
             logger.error("Connection failed.", e);
+        } finally {
+            scanner.close();
         }
     }
 }
