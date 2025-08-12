@@ -7,6 +7,9 @@ import java.util.Scanner;
 
 import javax.crypto.SecretKey;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.google.gson.JsonObject;
 
 import game.common.Box;
@@ -27,10 +30,12 @@ public class GameClient {
     private boolean handshakeComplete = false;
     private String username;
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(GameClient.class);
+
     @OnOpen
     public void onOpen(Session session) {
         this.session = session;
-        System.out.println("Connection established. Waiting for server handshake...");
+        LOGGER.info("Connection established. Waiting for server handshake...");
     }
 
     @OnMessage
@@ -51,25 +56,24 @@ public class GameClient {
                 session.getBasicRemote().sendText(Base64.getEncoder().encodeToString(encryptedAesKey));
 
                 handshakeComplete = true;
-                System.out.println("Handshake complete. You are now securely connected as " + this.username + "!");
-                System.out.println("Type messages and press Enter to send. Type 'exit' to quit.");
+                LOGGER.info("Handshake complete. Secure connection established as [{}].", this.username);
+                LOGGER.info("Type messages and press Enter to send. Type 'exit' to quit.");
 
             } else {
                 // Subsequent messages are AES-encrypted game data
                 byte[] decryptedBytes = CryptoUtils.aesDecrypt(Base64.getDecoder().decode(message), this.aesKey);
                 String decryptedJson = new String(decryptedBytes);
                 Box incomingBox = new BoxCodec().decode(decryptedJson);
-                System.out.println("Server> " + incomingBox.getPayload());
+                LOGGER.info("Server> {}", incomingBox.getPayload());
             }
         } catch (Exception e) {
-            System.err.println("Error processing message from server.");
-            e.printStackTrace();
+            LOGGER.error("Error processing message from server.", e);
         }
     }
 
     public void sendMessage(String message) {
         if (!handshakeComplete) {
-            System.out.println("Cannot send message, handshake is not complete.");
+            LOGGER.warn("Cannot send message — handshake not complete.");
             return;
         }
         try {
@@ -83,7 +87,7 @@ public class GameClient {
             session.getBasicRemote().sendText(Base64.getEncoder().encodeToString(encryptedPayload));
 
         } catch (Exception e) {
-            e.printStackTrace();
+            LOGGER.error("Failed to send message: {}", message, e);
         }
     }
 
@@ -93,10 +97,10 @@ public class GameClient {
 
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
-        System.out.print("Enter the server IP address (e.g., 192.168.1.5 or localhost): ");
+        LOGGER.info("Enter the server IP address (e.g., 192.168.1.5 or localhost): ");
         String serverIp = scanner.nextLine();
 
-        System.out.print("Enter your username (or press Enter for default): ");
+        LOGGER.info("Enter your username (or press Enter for default): ");
         String usernameInput = scanner.nextLine();
 
         try {
@@ -123,7 +127,7 @@ public class GameClient {
             } while (!"exit".equalsIgnoreCase(input));
 
         } catch (Exception e) {
-            System.err.println("Connection failed: " + e.getMessage());
+            LOGGER.error("Connection failed: {}", e.getMessage(), e);
         } finally {
             scanner.close();
         }
