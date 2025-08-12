@@ -1,13 +1,13 @@
 package game.server;
 
-import org.glassfish.tyrus.server.Server;
-
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.Enumeration;
+
+import org.glassfish.tyrus.server.Server;
 
 public class ServerRunner {
 
@@ -24,11 +24,12 @@ public class ServerRunner {
                 if (ni.isLoopback() || !ni.isUp()) {
                     continue;
                 }
-                
+
                 Enumeration<InetAddress> inetAddresses = ni.getInetAddresses();
                 while (inetAddresses.hasMoreElements()) {
                     InetAddress inetAddress = inetAddresses.nextElement();
-                    if (inetAddress instanceof Inet4Address && !inetAddress.isLoopbackAddress() && inetAddress.isSiteLocalAddress()) {
+                    if (inetAddress instanceof Inet4Address && !inetAddress.isLoopbackAddress()
+                            && inetAddress.isSiteLocalAddress()) {
                         return inetAddress.getHostAddress();
                     }
                 }
@@ -51,7 +52,8 @@ public class ServerRunner {
 
         try {
             server.start();
-            System.out.println("Server started. Clients can connect to: ws://" + hostIp + ":8025/websockets/battlegrid");
+            System.out
+                    .println("Server started. Clients can connect to: ws://" + hostIp + ":8025/websockets/battlegrid");
             System.out.println("Press any key to stop the server...");
             new BufferedReader(new InputStreamReader(System.in)).readLine();
         } catch (Exception e) {

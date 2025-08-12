@@ -1,12 +1,13 @@
 // src/test/java/game/common/BoxTest.java
 package game.common;
 
-import com.google.gson.JsonObject;
-import jakarta.websocket.DecodeException;
-import jakarta.websocket.EncodeException;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import com.google.gson.JsonObject;
+
+import jakarta.websocket.DecodeException;
+import jakarta.websocket.EncodeException;
 
 class BoxTest {
 

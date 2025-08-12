@@ -1,14 +1,5 @@
 package game.server;
 
-import com.google.gson.JsonObject;
-import game.common.Box;
-import game.common.BoxCodec;
-import game.common.CryptoUtils;
-
-import jakarta.websocket.*;
-import jakarta.websocket.server.ServerEndpoint;
-
-import javax.crypto.SecretKey;
 import java.io.IOException;
 import java.security.KeyPair;
 import java.security.PrivateKey;
@@ -18,7 +9,21 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
-@ServerEndpoint(value = "/battlegrid", decoders = {BoxCodec.class})
+import javax.crypto.SecretKey;
+
+import com.google.gson.JsonObject;
+
+import game.common.Box;
+import game.common.BoxCodec;
+import game.common.CryptoUtils;
+import jakarta.websocket.OnClose;
+import jakarta.websocket.OnError;
+import jakarta.websocket.OnMessage;
+import jakarta.websocket.OnOpen;
+import jakarta.websocket.Session;
+import jakarta.websocket.server.ServerEndpoint;
+
+@ServerEndpoint(value = "/battlegrid", decoders = { BoxCodec.class })
 public class GameServerEndpoint {
 
 	private static final Set<Session> sessions = Collections.synchronizedSet(new HashSet<>());
@@ -63,7 +68,8 @@ public class GameServerEndpoint {
 
 	@OnMessage
 	public void onMessage(String rawMessage, Session session) {
-		// We check if the session has an AES key. If not, this must be the handshake response.
+		// We check if the session has an AES key. If not, this must be the handshake
+		// response.
 		if (session.getUserProperties().get("aesKey") == null) {
 			handleHandshakeResponse(rawMessage, session);
 		} else {
