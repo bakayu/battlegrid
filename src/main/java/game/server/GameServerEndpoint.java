@@ -7,6 +7,9 @@ import jakarta.websocket.OnOpen;
 import jakarta.websocket.Session;
 import jakarta.websocket.server.ServerEndpoint;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.util.Collections;
 import java.util.HashSet;
@@ -19,6 +22,7 @@ import java.util.Set;
 @ServerEndpoint(value = "/battlegrid")
 public class GameServerEndpoint {
 
+    private static final Logger logger = LoggerFactory.getLogger(GameServerEndpoint.class);
     // A thread-safe set to store all active client sessions.
     private static final Set<Session> sessions = Collections.synchronizedSet(new HashSet<>());
 
@@ -30,7 +34,7 @@ public class GameServerEndpoint {
     @OnOpen
     public void onOpen(Session session) {
         sessions.add(session);
-        System.out.println("New connection! Session ID: " + session.getId());
+        logger.info("New connection! Session ID: {}", session.getId());
         broadcast("Player " + session.getId() + " has joined the battlefield.");
     }
 
@@ -42,7 +46,7 @@ public class GameServerEndpoint {
      */
     @OnMessage
     public void onMessage(String message, Session session) {
-        System.out.println("Message from " + session.getId() + ": " + message);
+        logger.info("Message from {}: {}", session.getId(), message);
         // For a real game, you would parse this message to handle game actions.
         // For now, we'll just broadcast it as a chat message.
         broadcast("Player " + session.getId() + ": " + message);
@@ -56,7 +60,7 @@ public class GameServerEndpoint {
     @OnClose
     public void onClose(Session session) {
         sessions.remove(session);
-        System.out.println("Connection closed. Session ID: " + session.getId());
+        logger.info("Connection closed. Session ID: {}", session.getId());
         broadcast("Player " + session.getId() + " has left the battlefield.");
     }
 
@@ -68,7 +72,7 @@ public class GameServerEndpoint {
      */
     @OnError
     public void onError(Session session, Throwable throwable) {
-        System.err.println("Error for session " + session.getId() + ": " + throwable.getMessage());
+        logger.error("Error for session {}: {}", session.getId(), throwable.getMessage(), throwable);
         // You might want to remove the session on error as well.
         sessions.remove(session);
     }
@@ -83,7 +87,7 @@ public class GameServerEndpoint {
             try {
                 session.getBasicRemote().sendText(message);
             } catch (IOException e) {
-                System.err.println("Failed to send message to session " + session.getId());
+                logger.error("Failed to send message to session {}", session.getId(), e);
                 // Consider removing the session if sending fails.
             }
         });
