@@ -31,6 +31,11 @@ client: sync
 	@echo "--- Starting client... ---"
 	$(MVN) exec:java -Dexec.mainClass="$(CLIENT_CLASS)"
 
+# Target to run tests
+test:
+	@echo "--- Running tests... ---"
+	$(MVN) test
+
 # Target to clean the project build artifacts
 clean:
 	@echo "--- Cleaning project... ---"
