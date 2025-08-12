@@ -30,7 +30,10 @@ public class GameServerEndpoint {
 	private static PrivateKey rsaPrivateKey;
 	private static PublicKey rsaPublicKey;
 
-	// Static initializer block to generate the server's RSA key pair once.
+	private static final String PROPERTY_AES_KEY = "aesKey";
+	private static final String PROPERTY_USERNAME = "username";
+
+	// Static initializer block to generate the server's RSA key pair.
 	static {
 		try {
 			KeyPair keyPair = CryptoUtils.generateRSAKeyPair();
@@ -42,8 +45,13 @@ public class GameServerEndpoint {
 		}
 	}
 
-	@OnOpen
-	public void onOpen(Session session) {
+		/**
+		 * Called when a new WebSocket connection is opened. Initiates handshake by sending
+		 * the server's public RSA key to the client.
+		 * @param session The WebSocket session for the connecting client.
+		 */
+		@OnOpen
+		public void onOpen(Session session) {
 		System.out.println("New connection attempt from Session ID: " + session.getId());
 		// Start the handshake by sending the server's public RSA key to the client.
 		try {
@@ -66,17 +74,31 @@ public class GameServerEndpoint {
 		}
 	}
 
-	@OnMessage
-	public void onMessage(String rawMessage, Session session) {
-		// We check if the session has an AES key. If not, this must be the handshake
+		/**
+		 * Called when a message is received from a client. Handles handshake response if
+		 * AES key is not set, otherwise processes game messages.
+		 * @param rawMessage The raw message received from the client.
+		 * @param session The WebSocket session for the client.
+		 */
+		@OnMessage
+		public void onMessage(String rawMessage, Session session) {
+		// Check if the session has an AES key. If not, this must be the handshake
 		// response.
-		if (session.getUserProperties().get("aesKey") == null) {
+		if (session.getUserProperties().get(PROPERTY_AES_KEY) == null) {
 			handleHandshakeResponse(rawMessage, session);
 		} else {
 			handleGameMessage(rawMessage, session);
 		}
 	}
 
+	/**
+	 * Handles the handshake response from a client, decrypts the AES key, assigns a
+	 * username, and notifies all players of the new user.
+	 * 
+	 * @param encryptedAesKeyString The AES key encrypted with the server's public
+	 *                              RSA key.
+	 * @param session               The WebSocket session for the client.
+	 */
 	private void handleHandshakeResponse(String encryptedAesKeyString, Session session) {
 		try {
 			// Decrypt the AES key sent from the client using our private RSA key.
@@ -85,15 +107,16 @@ public class GameServerEndpoint {
 			SecretKey aesKey = CryptoUtils.stringToAesKey(new String(Base64.getEncoder().encode(decryptedAesKeyBytes)));
 
 			// Store the AES key in the session's properties for future use.
-			session.getUserProperties().put("aesKey", aesKey);
+			session.getUserProperties().put(PROPERTY_AES_KEY, aesKey);
 
 			// The client also sends its username in this first message
 			// For simplicity, we'll assume the username is sent plain text after the key
 			// In a real app, this would be part of an encrypted payload.
 			// Let's just assign a default name for now.
+			// TODO: Add feature to allow players to set their own usernames.
 			int playerNumber = sessions.size() + 1;
 			String username = "Player" + playerNumber;
-			session.getUserProperties().put("username", username);
+			session.getUserProperties().put(PROPERTY_USERNAME, username);
 
 			sessions.add(session); // Officially add the session after successful handshake
 			System.out.println("Handshake complete for " + session.getId() + ". User: " + username);
@@ -102,7 +125,7 @@ public class GameServerEndpoint {
 			JsonObject joinPayload = new JsonObject();
 			joinPayload.addProperty("type", "player_joined");
 			joinPayload.addProperty("message", username + " has joined the battlefield.");
-			joinPayload.addProperty("username", username);
+			joinPayload.addProperty(PROPERTY_USERNAME, username);
 			broadcast(new Box(joinPayload));
 
 		} catch (Exception e) {
@@ -111,15 +134,22 @@ public class GameServerEndpoint {
 		}
 	}
 
+	/**
+	 * Processes an incoming encrypted game message from a client, decrypts it,
+	 * adds sender info, and broadcasts it to all players.
+	 * 
+	 * @param encryptedMessage The encrypted message from the client.
+	 * @param session          The WebSocket session for the client.
+	 */
 	private void handleGameMessage(String encryptedMessage, Session session) {
 		try {
-			SecretKey aesKey = (SecretKey) session.getUserProperties().get("aesKey");
+			SecretKey aesKey = (SecretKey) session.getUserProperties().get(PROPERTY_AES_KEY);
 			byte[] decryptedBytes = CryptoUtils.aesDecrypt(Base64.getDecoder().decode(encryptedMessage), aesKey);
 			String decryptedJson = new String(decryptedBytes);
 
 			Box incomingBox = new BoxCodec().decode(decryptedJson);
 			JsonObject payload = incomingBox.getPayload();
-			String username = (String) session.getUserProperties().get("username");
+			String username = (String) session.getUserProperties().get(PROPERTY_USERNAME);
 
 			System.out.println("Message from " + username + ": " + payload);
 			payload.addProperty("sender", username); // Add sender info
@@ -134,13 +164,13 @@ public class GameServerEndpoint {
 	@OnClose
 	public void onClose(Session session) {
 		sessions.remove(session);
-		String username = (String) session.getUserProperties().getOrDefault("username", "A player");
+		String username = (String) session.getUserProperties().getOrDefault(PROPERTY_USERNAME, "A player");
 		System.out.println("Connection closed for: " + username);
 
 		JsonObject leavePayload = new JsonObject();
 		leavePayload.addProperty("type", "player_left");
 		leavePayload.addProperty("message", username + " has left the battlefield.");
-		leavePayload.addProperty("username", username);
+		leavePayload.addProperty(PROPERTY_USERNAME, username);
 		broadcast(new Box(leavePayload));
 	}
 
@@ -150,11 +180,17 @@ public class GameServerEndpoint {
 		sessions.remove(session);
 	}
 
+	/**
+	 * Broadcasts a message box to all connected sessions, encrypting the payload
+	 * with each client's unique AES key.
+	 * 
+	 * @param box The message box to broadcast.
+	 */
 	private void broadcast(Box box) {
 		sessions.forEach(session -> {
 			try {
 				// Encrypt the message with each client's unique AES key before sending
-				SecretKey aesKey = (SecretKey) session.getUserProperties().get("aesKey");
+				SecretKey aesKey = (SecretKey) session.getUserProperties().get(PROPERTY_AES_KEY);
 				if (aesKey != null) {
 					String jsonPayload = new BoxCodec().encode(box);
 					byte[] encryptedPayload = CryptoUtils.aesEncrypt(jsonPayload.getBytes(), aesKey);

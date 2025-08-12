@@ -42,8 +42,8 @@ public class GameClient {
                 String serverRsaPublicKeyStr = handshakeBox.getPayload().get("publicKey").getAsString();
                 PublicKey serverRsaPublicKey = CryptoUtils.stringToPublicKey(serverRsaPublicKeyStr);
 
-                // Now, we generate our AES key, encrypt it with the server's public key, and
-                // send it back.
+                // AES Key is generated, encrypted with server's public RSA key, and finally
+                // sent back
                 this.aesKey = CryptoUtils.generateAESKey();
                 byte[] encryptedAesKey = CryptoUtils.rsaEncrypt(aesKey.getEncoded(), serverRsaPublicKey);
 
@@ -124,6 +124,8 @@ public class GameClient {
 
         } catch (Exception e) {
             System.err.println("Connection failed: " + e.getMessage());
+        } finally {
+            scanner.close();
         }
     }
 }

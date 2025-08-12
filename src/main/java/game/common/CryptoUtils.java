@@ -22,6 +22,10 @@ import javax.crypto.spec.SecretKeySpec;
  */
 public class CryptoUtils {
 
+	private CryptoUtils() {
+		// Private constructor to prevent instantiation
+	}
+
 	// RSA Methods
 
 	/**
