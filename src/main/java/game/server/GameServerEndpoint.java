@@ -132,7 +132,7 @@ public class GameServerEndpoint {
 			// Notify all players that a new user has joined.
 			JsonObject joinPayload = new JsonObject();
 			joinPayload.addProperty("type", "player_joined");
-			joinPayload.addProperty("message", username + " has joined the battlefield.");
+			joinPayload.addProperty("message", username + " has joined the battlegird.");
 			joinPayload.addProperty(PROPERTY_USERNAME, username);
 			broadcast(new Box(joinPayload));
 
@@ -175,7 +175,7 @@ public class GameServerEndpoint {
 
 		JsonObject leavePayload = new JsonObject();
 		leavePayload.addProperty("type", "player_left");
-		leavePayload.addProperty("message", username + " has left the battlefield.");
+		leavePayload.addProperty("message", username + " has left the battlegird.");
 		leavePayload.addProperty(PROPERTY_USERNAME, username);
 		broadcast(new Box(leavePayload));
 	}
