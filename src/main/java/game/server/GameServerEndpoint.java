@@ -11,6 +11,9 @@ import java.util.Set;
 
 import javax.crypto.SecretKey;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.google.gson.JsonObject;
 
 import game.common.Box;
@@ -33,26 +36,31 @@ public class GameServerEndpoint {
 	private static final String PROPERTY_AES_KEY = "aesKey";
 	private static final String PROPERTY_USERNAME = "username";
 
+	private static final Logger LOGGER = LoggerFactory.getLogger(GameServerEndpoint.class);
+
 	// Static initializer block to generate the server's RSA key pair.
 	static {
 		try {
 			KeyPair keyPair = CryptoUtils.generateRSAKeyPair();
 			rsaPrivateKey = keyPair.getPrivate();
 			rsaPublicKey = keyPair.getPublic();
-			System.out.println("Server RSA KeyPair generated successfully.");
+			LOGGER.info("Server RSA KeyPair generated successfully.");
 		} catch (Exception e) {
+			LOGGER.error("Failed to generate server RSA key pair", e);
 			throw new RuntimeException("Failed to generate server RSA key pair", e);
 		}
 	}
 
-		/**
-		 * Called when a new WebSocket connection is opened. Initiates handshake by sending
-		 * the server's public RSA key to the client.
-		 * @param session The WebSocket session for the connecting client.
-		 */
-		@OnOpen
-		public void onOpen(Session session) {
-		System.out.println("New connection attempt from Session ID: " + session.getId());
+	/**
+	 * Called when a new WebSocket connection is opened. Initiates handshake by
+	 * sending
+	 * the server's public RSA key to the client.
+	 * 
+	 * @param session The WebSocket session for the connecting client.
+	 */
+	@OnOpen
+	public void onOpen(Session session) {
+		LOGGER.info("New connection attempt from Session ID: {}", session.getId());
 		// Start the handshake by sending the server's public RSA key to the client.
 		try {
 			JsonObject handshakePayload = new JsonObject();
@@ -62,26 +70,26 @@ public class GameServerEndpoint {
 			Box handshakeBox = new Box(handshakePayload);
 			// Use a plain text encoder for the initial handshake message
 			session.getBasicRemote().sendText(new BoxCodec().encode(handshakeBox));
-			System.out.println("Sent RSA public key to " + session.getId());
+			LOGGER.info("Sent RSA public key to session {}", session.getId());
 		} catch (Exception e) {
-			System.err.println("Handshake failed for session " + session.getId());
-			e.printStackTrace();
+			LOGGER.error("Handshake failed for session {}", session.getId(), e);
 			try {
 				session.close();
 			} catch (IOException ioException) {
-				// Ignore
+				LOGGER.warn("Failed to close session {}", session.getId(), ioException);
 			}
 		}
 	}
 
-		/**
-		 * Called when a message is received from a client. Handles handshake response if
-		 * AES key is not set, otherwise processes game messages.
-		 * @param rawMessage The raw message received from the client.
-		 * @param session The WebSocket session for the client.
-		 */
-		@OnMessage
-		public void onMessage(String rawMessage, Session session) {
+	/**
+	 * Called when a message is received from a client. Handles handshake response
+	 * if AES key is not set, otherwise processes game messages.
+	 * 
+	 * @param rawMessage The raw message received from the client.
+	 * @param session    The WebSocket session for the client.
+	 */
+	@OnMessage
+	public void onMessage(String rawMessage, Session session) {
 		// Check if the session has an AES key. If not, this must be the handshake
 		// response.
 		if (session.getUserProperties().get(PROPERTY_AES_KEY) == null) {
@@ -119,7 +127,7 @@ public class GameServerEndpoint {
 			session.getUserProperties().put(PROPERTY_USERNAME, username);
 
 			sessions.add(session); // Officially add the session after successful handshake
-			System.out.println("Handshake complete for " + session.getId() + ". User: " + username);
+			LOGGER.info("Handshake complete for session {}. User: {}", session.getId(), username);
 
 			// Notify all players that a new user has joined.
 			JsonObject joinPayload = new JsonObject();
@@ -129,8 +137,7 @@ public class GameServerEndpoint {
 			broadcast(new Box(joinPayload));
 
 		} catch (Exception e) {
-			System.err.println("AES key exchange failed for session " + session.getId());
-			e.printStackTrace();
+			LOGGER.error("AES key exchange failed for session {}", session.getId(), e);
 		}
 	}
 
@@ -151,13 +158,12 @@ public class GameServerEndpoint {
 			JsonObject payload = incomingBox.getPayload();
 			String username = (String) session.getUserProperties().get(PROPERTY_USERNAME);
 
-			System.out.println("Message from " + username + ": " + payload);
+			LOGGER.info("Message from {}: {}", username, payload);
 			payload.addProperty("sender", username); // Add sender info
 
 			broadcast(new Box(payload));
 		} catch (Exception e) {
-			System.err.println("Failed to process game message for session " + session.getId());
-			e.printStackTrace();
+			LOGGER.error("Failed to process game message for session {}", session.getId(), e);
 		}
 	}
 
@@ -165,7 +171,7 @@ public class GameServerEndpoint {
 	public void onClose(Session session) {
 		sessions.remove(session);
 		String username = (String) session.getUserProperties().getOrDefault(PROPERTY_USERNAME, "A player");
-		System.out.println("Connection closed for: " + username);
+		LOGGER.info("Connection closed for: {}", username);
 
 		JsonObject leavePayload = new JsonObject();
 		leavePayload.addProperty("type", "player_left");
@@ -176,7 +182,7 @@ public class GameServerEndpoint {
 
 	@OnError
 	public void onError(Session session, Throwable throwable) {
-		System.err.println("Error for session " + session.getId() + ": " + throwable.getMessage());
+		LOGGER.error("Error for session {}: {}", session.getId(), throwable.getMessage(), throwable);
 		sessions.remove(session);
 	}
 
@@ -197,7 +203,7 @@ public class GameServerEndpoint {
 					session.getBasicRemote().sendText(Base64.getEncoder().encodeToString(encryptedPayload));
 				}
 			} catch (Exception e) {
-				System.err.println("Failed to broadcast to session " + session.getId());
+				LOGGER.error("Failed to broadcast to session {}", session.getId(), e);
 			}
 		});
 	}

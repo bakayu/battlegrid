@@ -8,8 +8,12 @@ import java.net.NetworkInterface;
 import java.util.Enumeration;
 
 import org.glassfish.tyrus.server.Server;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ServerRunner {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ServerRunner.class);
 
     /**
      * Attempts to find the local LAN IP address of the machine.
@@ -35,7 +39,7 @@ public class ServerRunner {
                 }
             }
         } catch (Exception e) {
-            System.err.println("Error while getting local IP address: " + e.getMessage());
+            LOGGER.error("Error while getting local IP address: {}", e.getMessage(), e);
         }
         return null;
     }
@@ -43,7 +47,7 @@ public class ServerRunner {
     public static void main(String[] args) {
         String hostIp = getLocalIpAddress();
         if (hostIp == null) {
-            System.err.println("Could not find a local network IP. Server might not be accessible from LAN.");
+            LOGGER.warn("Could not find a local network IP. Server might not be accessible from LAN.");
             hostIp = "localhost"; // Fallback
         }
 
@@ -52,13 +56,14 @@ public class ServerRunner {
 
         try {
             server.start();
-            System.out.println("Server started. Clients can connect to: " + hostIp);
-            System.out.println("Press any key to stop the server...");
+            LOGGER.info("Server started. Clients can connect to: {}", hostIp);
+            LOGGER.info("Press any key to stop the server...");
             new BufferedReader(new InputStreamReader(System.in)).readLine();
         } catch (Exception e) {
-            e.printStackTrace();
+            LOGGER.error("Error starting or running server", e);
         } finally {
             server.stop();
+            LOGGER.info("Server stopped.");
         }
     }
 }
