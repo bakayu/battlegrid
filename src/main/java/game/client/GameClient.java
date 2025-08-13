@@ -14,6 +14,7 @@ import com.google.gson.JsonObject;
 
 import game.common.Box;
 import game.common.BoxCodec;
+import game.common.Constants;
 import game.common.CryptoUtils;
 import jakarta.websocket.ClientEndpoint;
 import jakarta.websocket.ContainerProvider;
@@ -51,9 +52,16 @@ public class GameClient {
                 // sent back
                 this.aesKey = CryptoUtils.generateAESKey();
                 byte[] encryptedAesKey = CryptoUtils.rsaEncrypt(aesKey.getEncoded(), serverRsaPublicKey);
+                String encryptedAesKeyString = Base64.getEncoder().encodeToString(encryptedAesKey);
 
-                // Send the encrypted key as a Base64 string
-                session.getBasicRemote().sendText(Base64.getEncoder().encodeToString(encryptedAesKey));
+                // the handshake response payload with username and encrypted key.
+                JsonObject handshakeResponsePayload = new JsonObject();
+                handshakeResponsePayload.addProperty("username", this.username);
+                handshakeResponsePayload.addProperty("encryptedAesKey", encryptedAesKeyString);
+
+                // Wrap in a Box and send to the server.
+                Box responseBox = new Box(handshakeResponsePayload);
+                session.getBasicRemote().sendText(new BoxCodec().encode(responseBox));
 
                 handshakeComplete = true;
                 LOGGER.info("Handshake complete. Secure connection established as [{}].", this.username);
@@ -64,7 +72,25 @@ public class GameClient {
                 byte[] decryptedBytes = CryptoUtils.aesDecrypt(Base64.getDecoder().decode(message), this.aesKey);
                 String decryptedJson = new String(decryptedBytes);
                 Box incomingBox = new BoxCodec().decode(decryptedJson);
-                LOGGER.info("Server> {}", incomingBox.getPayload());
+
+                JsonObject payload = incomingBox.getPayload();
+                String type = payload.get("type").getAsString();
+                String sender = payload.has("sender") ? payload.get("sender").getAsString() : "Server";
+
+                switch (type) {
+                    case "player_joined":
+                    case "player_left":
+                        LOGGER.info("[System] {}", payload.get("message").getAsString());
+                        break;
+                    case "chat":
+                        if (!this.username.equals(sender)) {
+                            LOGGER.info("{}: {}", sender, payload.get("text").getAsString());
+                        }
+                        break;
+                    default:
+                        LOGGER.info("{}> {}", sender, payload);
+                        break;
+                }
             }
         } catch (Exception e) {
             LOGGER.error("Error processing message from server.", e);
@@ -107,7 +133,7 @@ public class GameClient {
             GameClient client = new GameClient();
 
             if (usernameInput == null || usernameInput.trim().isEmpty()) {
-                client.setUsername("Player" + (int) (Math.random() * 1000)); // Simple default
+                client.setUsername(Constants.DEFAULT_USERNAME);
             } else {
                 client.setUsername(usernameInput);
             }
