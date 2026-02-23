@@ -1,69 +1,69 @@
 package game.server;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
+import java.util.Collections;
 import java.util.Enumeration;
 
 import org.glassfish.tyrus.server.Server;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import game.common.Constants;
+
+/**
+ * Starts the BattleGrid WebSocket server.
+ */
 public class ServerRunner {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ServerRunner.class);
 
-    /**
-     * Attempts to find the local LAN IP address of the machine.
-     *
-     * @return The site-local IPv4 address, or null if not found.
-     */
-    private static String getLocalIpAddress() {
-        try {
-            Enumeration<NetworkInterface> networkInterfaces = NetworkInterface.getNetworkInterfaces();
-            while (networkInterfaces.hasMoreElements()) {
-                NetworkInterface ni = networkInterfaces.nextElement();
-                if (ni.isLoopback() || !ni.isUp()) {
-                    continue;
-                }
-
-                Enumeration<InetAddress> inetAddresses = ni.getInetAddresses();
-                while (inetAddresses.hasMoreElements()) {
-                    InetAddress inetAddress = inetAddresses.nextElement();
-                    if (inetAddress instanceof Inet4Address && !inetAddress.isLoopbackAddress()
-                            && inetAddress.isSiteLocalAddress()) {
-                        return inetAddress.getHostAddress();
-                    }
-                }
-            }
-        } catch (Exception e) {
-            LOGGER.error("Error while getting local IP address: {}", e.getMessage(), e);
-        }
-        return null;
-    }
-
     public static void main(String[] args) {
-        String hostIp = getLocalIpAddress();
-        if (hostIp == null) {
-            LOGGER.warn("Could not find a local network IP. Server might not be accessible from LAN.");
-            hostIp = "localhost"; // Fallback
-        }
-
-        // Bind to 0.0.0.0 to listen on all available network interfaces
-        Server server = new Server("0.0.0.0", 8025, "/websockets", null, GameServerEndpoint.class);
+        Server server = new Server("0.0.0.0", Constants.SERVER_PORT, "/websockets",
+                null, GameServerEndpoint.class);
 
         try {
             server.start();
-            LOGGER.info("Server started. Clients can connect to: {}", hostIp);
-            LOGGER.info("Press any key to stop the server...");
-            new BufferedReader(new InputStreamReader(System.in)).readLine();
+
+            LOGGER.info("========================================");
+            LOGGER.info("  BattleGrid Server started!");
+            LOGGER.info("  Port: {}", Constants.SERVER_PORT);
+            LOGGER.info("  Endpoint: ws://<ip>:{}{}", Constants.SERVER_PORT, Constants.WEBSOCKET_PATH);
+            LOGGER.info("----------------------------------------");
+            printNetworkAddresses();
+            LOGGER.info("========================================");
+            LOGGER.info("Waiting for players to connect...");
+            LOGGER.info("Press ENTER to stop the server.");
+
+            // Block until user presses Enter
+            System.in.read();
+
         } catch (Exception e) {
-            LOGGER.error("Error starting or running server", e);
+            LOGGER.error("Failed to start server", e);
         } finally {
             server.stop();
             LOGGER.info("Server stopped.");
+        }
+    }
+
+    private static void printNetworkAddresses() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            for (NetworkInterface ni : Collections.list(interfaces)) {
+                if (ni.isLoopback() || !ni.isUp())
+                    continue;
+
+                for (InetAddress addr : Collections.list(ni.getInetAddresses())) {
+                    if (addr.getHostAddress().contains(":"))
+                        continue; // Skip IPv6
+                    LOGGER.info("  Connect with: ws://{}:{}{}", addr.getHostAddress(),
+                            Constants.SERVER_PORT, Constants.WEBSOCKET_PATH);
+                }
+            }
+            LOGGER.info("  Local:        ws://localhost:{}{}", Constants.SERVER_PORT,
+                    Constants.WEBSOCKET_PATH);
+        } catch (Exception e) {
+            LOGGER.warn("Could not detect network addresses: {}", e.getMessage());
         }
     }
 }

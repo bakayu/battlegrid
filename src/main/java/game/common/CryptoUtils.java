@@ -110,6 +110,20 @@ public class CryptoUtils {
 		return cipher.doFinal(data);
 	}
 
+	/**
+	 * Converts an RSA PublicKey to a Base64-encoded string.
+	 */
+	public static String publicKeyToString(PublicKey publicKey) {
+		return Base64.getEncoder().encodeToString(publicKey.getEncoded());
+	}
+
+	/**
+	 * Converts raw AES key bytes into a SecretKey object.
+	 */
+	public static SecretKey bytesToAesKey(byte[] keyBytes) {
+		return new SecretKeySpec(keyBytes, "AES");
+	}
+
 	// KEY Conversion Methods
 
 	/**
