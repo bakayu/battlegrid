@@ -95,6 +95,7 @@ public class GameLobby {
         int playerIndex = session.getPlayerIndex(wsSessionId);
         if (playerIndex >= 0) {
             session.getGameState().playerDisconnected(playerIndex);
+            session.cancelTurnTimeout();
         }
 
         // If this was the waiting session and it's now empty, clean it up
@@ -105,20 +106,41 @@ public class GameLobby {
                     session.getSessionId());
         }
 
-        // If game is over, clean up after a delay or just leave for now
-        if (session.getGameState().getPhase() == GameState.Phase.GAME_OVER) {
-            // Remove remaining player mapping
-            for (int i = 0; i < 2; i++) {
-                String key = session.getSessionKey(i);
-                if (key != null) {
-                    playerSessionMap.remove(key);
-                }
-            }
-            sessions.remove(session.getSessionId());
-            LOGGER.info("Session {} cleaned up after game over", session.getSessionId());
-        }
-
         return Optional.of(session);
+    }
+
+    /**
+     * Completely removes a finished session and unmaps both players.
+     */
+    public synchronized void cleanupSession(GameSession session) {
+        session.cancelTurnTimeout();
+        for (int i = 0; i < 2; i++) {
+            String key = session.getSessionKey(i);
+            if (key != null) {
+                playerSessionMap.remove(key);
+            }
+        }
+        sessions.remove(session.getSessionId());
+        if (waitingSession == session) {
+            waitingSession = null;
+        }
+        LOGGER.info("Session {} fully cleaned up", session.getSessionId());
+    }
+
+    /**
+     * Re-queues a player into the lobby (for play again when opponent declined).
+     */
+    public JoinResult requeuePlayer(String wsSessionId, String username) {
+        // Make sure old mapping is cleared
+        playerSessionMap.remove(wsSessionId);
+        return joinPlayer(wsSessionId, username);
+    }
+
+    /**
+     * Returns the number of active sessions.
+     */
+    public int getActiveSessionCount() {
+        return sessions.size();
     }
 
     /**

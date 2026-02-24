@@ -212,4 +212,70 @@ class GameSessionTest {
             }
         }
     }
+
+    @Test
+    void testPlayAgainVoting_bothYes() {
+        GameSession session = createFullSession();
+        session.startGame(GameMode.BLITZ);
+
+        assertNull(session.votePlayAgain(0, true));
+        Boolean result = session.votePlayAgain(1, true);
+        assertTrue(result);
+    }
+
+    @Test
+    void testPlayAgainVoting_oneNo() {
+        GameSession session = createFullSession();
+        session.startGame(GameMode.BLITZ);
+
+        assertNull(session.votePlayAgain(0, true));
+        Boolean result = session.votePlayAgain(1, false);
+        assertFalse(result);
+    }
+
+    @Test
+    void testPlayAgainVoting_waitingForSecond() {
+        GameSession session = createFullSession();
+        session.startGame(GameMode.BLITZ);
+
+        assertNull(session.votePlayAgain(0, true));
+    }
+
+    @Test
+    void testResetForNewGame() {
+        GameSession session = createFullSession();
+        session.startGame(GameMode.BLITZ);
+
+        session.resetForNewGame();
+
+        assertEquals(GameState.Phase.LOBBY, session.getGameState().getPhase());
+        assertTrue(session.getGameState().isFull());
+    }
+
+    @Test
+    void testBuildPlayAgainPrompt() {
+        GameSession session = createFullSession();
+        JsonObject msg = session.buildPlayAgainPromptMessage();
+        assertEquals(Constants.MSG_PLAY_AGAIN_PROMPT, msg.get("type").getAsString());
+    }
+
+    @Test
+    void testTurnTimeout() throws InterruptedException {
+        GameSession session = createFullSession();
+        session.startGame(GameMode.BLITZ);
+
+        boolean[] timeoutFired = { false };
+        session.setOnTurnTimeout(() -> timeoutFired[0] = true);
+        // We won't actually wait 60 seconds — just test start/cancel
+        session.startTurnTimeout();
+        session.cancelTurnTimeout();
+        assertFalse(timeoutFired[0]);
+    }
+
+    private GameSession createFullSession() {
+        GameSession session = new GameSession("test-session");
+        session.addPlayer("ws-0", "Alice");
+        session.addPlayer("ws-1", "Bob");
+        return session;
+    }
 }

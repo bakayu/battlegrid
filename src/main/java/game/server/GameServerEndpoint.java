@@ -1,7 +1,6 @@
 package game.server;
 
 import java.security.KeyPair;
-import java.security.PublicKey;
 import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,6 +24,7 @@ import game.common.model.WeaponType;
 import game.server.game.AttackResult;
 import game.server.game.GameLobby;
 import game.server.game.GameSession;
+import game.server.game.GameState;
 import jakarta.websocket.OnClose;
 import jakarta.websocket.OnError;
 import jakarta.websocket.OnMessage;
@@ -102,6 +102,9 @@ public class GameServerEndpoint {
 			int playerIndex = gameSession.getPlayerIndex(sessionId);
 			int opponentIndex = 1 - playerIndex;
 			String opponentSessionKey = gameSession.getSessionKey(opponentIndex);
+			String username = SESSION_USERNAMES.getOrDefault(sessionId, "Opponent");
+
+			boolean wasInProgress = gameSession.getGameState().getPhase() == GameState.Phase.IN_PROGRESS;
 
 			LOBBY.removePlayer(sessionId);
 
@@ -109,14 +112,24 @@ public class GameServerEndpoint {
 			if (opponentSessionKey != null) {
 				Session opponentWsSession = ACTIVE_SESSIONS.get(opponentSessionKey);
 				if (opponentWsSession != null && opponentWsSession.isOpen()) {
-					String username = SESSION_USERNAMES.getOrDefault(sessionId, "Opponent");
 					sendEncrypted(opponentWsSession, opponentSessionKey,
 							GameSession.buildOpponentDisconnectedMessage(username));
+
+					// If game was in progress, send game over to the remaining player
+					if (wasInProgress) {
+						sendEncrypted(opponentWsSession, opponentSessionKey,
+								gameSession.buildGameOverMessage(opponentIndex));
+					}
 				}
+			}
+
+			// Clean up session if game is over
+			if (gameSession.getGameState().getPhase() == GameState.Phase.GAME_OVER) {
+				LOBBY.cleanupSession(gameSession);
 			}
 		});
 
-		// Cleanup
+		// Cleanup connection state
 		SESSION_AES_KEYS.remove(sessionId);
 		ACTIVE_SESSIONS.remove(sessionId);
 		HANDSHAKE_COMPLETE.remove(sessionId);
@@ -176,23 +189,26 @@ public class GameServerEndpoint {
 		} else {
 			// Second player — both are ready, start mode selection
 			LOGGER.info("Session {} is full. Starting mode selection.", gameSession.getSessionId());
+			sendModeSelectToBoth(gameSession);
+		}
+	}
 
-			String player0SessionKey = gameSession.getSessionKey(0);
-			String player1SessionKey = gameSession.getSessionKey(1);
-			Session player0Session = ACTIVE_SESSIONS.get(player0SessionKey);
-			Session player1Session = ACTIVE_SESSIONS.get(player1SessionKey);
+	private void sendModeSelectToBoth(GameSession gameSession) {
+		String player0SessionKey = gameSession.getSessionKey(0);
+		String player1SessionKey = gameSession.getSessionKey(1);
+		Session player0Session = ACTIVE_SESSIONS.get(player0SessionKey);
+		Session player1Session = ACTIVE_SESSIONS.get(player1SessionKey);
 
-			String player0Name = gameSession.getGameState().getPlayer(0).getUsername();
-			String player1Name = gameSession.getGameState().getPlayer(1).getUsername();
+		String player0Name = gameSession.getGameState().getPlayer(0).getUsername();
+		String player1Name = gameSession.getGameState().getPlayer(1).getUsername();
 
-			if (player0Session != null) {
-				sendEncrypted(player0Session, player0SessionKey,
-						gameSession.buildModeSelectMessage(player1Name));
-			}
-			if (player1Session != null) {
-				sendEncrypted(player1Session, player1SessionKey,
-						gameSession.buildModeSelectMessage(player0Name));
-			}
+		if (player0Session != null) {
+			sendEncrypted(player0Session, player0SessionKey,
+					gameSession.buildModeSelectMessage(player1Name));
+		}
+		if (player1Session != null) {
+			sendEncrypted(player1Session, player1SessionKey,
+					gameSession.buildModeSelectMessage(player0Name));
 		}
 	}
 
@@ -217,6 +233,13 @@ public class GameServerEndpoint {
 
 		GameSession gameSession = LOBBY.getSessionForPlayer(sessionId).orElse(null);
 		if (gameSession == null) {
+			// Player not in any session — might be after a cleanup
+			// Try to re-queue them if they sent play_again
+			if (Constants.MSG_PLAY_AGAIN.equals(type)) {
+				String username = SESSION_USERNAMES.getOrDefault(sessionId, "Player");
+				joinLobby(session, sessionId, username);
+				return;
+			}
 			sendEncrypted(session, sessionId,
 					GameSession.buildErrorMessage("You are not in a game session."));
 			return;
@@ -228,6 +251,7 @@ public class GameServerEndpoint {
 			case Constants.MSG_SELECT_MODE -> handleModeSelect(gameSession, playerIndex, payload);
 			case Constants.MSG_ATTACK -> handleAttack(gameSession, playerIndex, payload);
 			case Constants.MSG_FORFEIT -> handleForfeit(gameSession, playerIndex);
+			case Constants.MSG_PLAY_AGAIN -> handlePlayAgain(gameSession, playerIndex, payload);
 			default -> {
 				LOGGER.warn("Unknown message type from {}: {}", sessionId, type);
 				sendEncrypted(session, sessionId,
@@ -260,10 +284,8 @@ public class GameServerEndpoint {
 			sendToPlayer(gameSession, 0, gameSession.buildGameStartMessage(0));
 			sendToPlayer(gameSession, 1, gameSession.buildGameStartMessage(1));
 
-			// Send turn messages
-			int currentTurn = gameSession.getGameState().getCurrentTurnIndex();
-			sendToPlayer(gameSession, currentTurn, gameSession.buildYourTurnMessage(currentTurn));
-			sendToPlayer(gameSession, 1 - currentTurn, gameSession.buildWaitTurnMessage(1 - currentTurn));
+			// Send turn messages and start timeout
+			sendTurnMessages(gameSession);
 		}
 		// If only one has voted, they just wait
 	}
@@ -323,28 +345,117 @@ public class GameServerEndpoint {
 		if (result.isGameOver()) {
 			sendToPlayer(gameSession, 0, gameSession.buildGameOverMessage(0));
 			sendToPlayer(gameSession, 1, gameSession.buildGameOverMessage(1));
+
+			// Send play-again prompt after a short delay
+			sendToPlayer(gameSession, 0, gameSession.buildPlayAgainPromptMessage());
+			sendToPlayer(gameSession, 1, gameSession.buildPlayAgainPromptMessage());
 		} else {
 			// Send turn messages for the next turn
-			int currentTurn = gameSession.getGameState().getCurrentTurnIndex();
-			sendToPlayer(gameSession, currentTurn,
-					gameSession.buildYourTurnMessage(currentTurn));
-			sendToPlayer(gameSession, 1 - currentTurn,
-					gameSession.buildWaitTurnMessage(1 - currentTurn));
+			sendTurnMessages(gameSession);
 		}
 	}
 
 	private void handleForfeit(GameSession gameSession, int playerIndex) {
+		gameSession.cancelTurnTimeout();
 		gameSession.getGameState().forfeit(playerIndex);
 
 		sendToPlayer(gameSession, 0, gameSession.buildGameOverMessage(0));
 		sendToPlayer(gameSession, 1, gameSession.buildGameOverMessage(1));
+
+		// Play again prompt
+		sendToPlayer(gameSession, 0, gameSession.buildPlayAgainPromptMessage());
+		sendToPlayer(gameSession, 1, gameSession.buildPlayAgainPromptMessage());
+	}
+
+	private void handlePlayAgain(GameSession gameSession, int playerIndex, JsonObject payload) {
+		boolean wantsToPlay = payload.has("answer") && payload.get("answer").getAsBoolean();
+
+		Boolean result = gameSession.votePlayAgain(playerIndex, wantsToPlay);
+
+		if (result == null) {
+			// Waiting for opponent
+			sendToPlayer(gameSession, playerIndex, gameSession.buildPlayAgainWaitingMessage());
+		} else if (result) {
+			// Both want to play again — reset and go to mode select
+			LOGGER.info("Session {}: Both players want to play again!", gameSession.getSessionId());
+			gameSession.resetForNewGame();
+			sendModeSelectToBoth(gameSession);
+		} else {
+			// At least one declined
+			LOGGER.info("Session {}: Play again declined.", gameSession.getSessionId());
+
+			// Find who wants to keep playing and re-queue them
+			for (int i = 0; i < 2; i++) {
+				String wsKey = gameSession.getSessionKey(i);
+				Session ws = wsKey != null ? ACTIVE_SESSIONS.get(wsKey) : null;
+				if (ws != null && ws.isOpen()) {
+					// Notify that the opponent declined
+					JsonObject msg = new JsonObject();
+					msg.addProperty("type", Constants.MSG_OPPONENT_DISCONNECTED);
+					msg.addProperty("message", "Opponent left. Returning to lobby...");
+					sendEncrypted(ws, wsKey, msg);
+				}
+			}
+
+			// Clean up session
+			LOBBY.cleanupSession(gameSession);
+
+			// Re-queue players who wanted to play
+			for (int i = 0; i < 2; i++) {
+				String wsKey = gameSession.getSessionKey(i);
+				if (wsKey != null) {
+					Session ws = ACTIVE_SESSIONS.get(wsKey);
+					String username = SESSION_USERNAMES.getOrDefault(wsKey, "Player");
+					if (ws != null && ws.isOpen()) {
+						joinLobby(ws, wsKey, username);
+					}
+				}
+			}
+		}
+	}
+
+	// --- Turn Management ---
+
+	private void sendTurnMessages(GameSession gameSession) {
+		int currentTurn = gameSession.getGameState().getCurrentTurnIndex();
+		sendToPlayer(gameSession, currentTurn, gameSession.buildYourTurnMessage(currentTurn));
+		sendToPlayer(gameSession, 1 - currentTurn, gameSession.buildWaitTurnMessage(1 - currentTurn));
+
+		// Start turn timeout
+		gameSession.setOnTurnTimeout(() -> handleTurnTimeout(gameSession));
+		gameSession.startTurnTimeout();
+	}
+
+	private synchronized void handleTurnTimeout(GameSession gameSession) {
+		if (gameSession.getGameState().getPhase() != GameState.Phase.IN_PROGRESS) {
+			return;
+		}
+
+		int timedOutPlayer = gameSession.getGameState().getCurrentTurnIndex();
+		String username = gameSession.getGameState().getPlayer(timedOutPlayer).getUsername();
+
+		LOGGER.info("Session {}: {} timed out, forfeiting.", gameSession.getSessionId(), username);
+
+		gameSession.getGameState().forfeit(timedOutPlayer);
+
+		// Notify both
+		sendToPlayer(gameSession, 0, gameSession.buildGameOverMessage(0));
+		sendToPlayer(gameSession, 1, gameSession.buildGameOverMessage(1));
+
+		// Send timeout notice
+		JsonObject timeoutMsg = new JsonObject();
+		timeoutMsg.addProperty("type", Constants.MSG_ERROR);
+		timeoutMsg.addProperty("message", username + " ran out of time!");
+		sendToPlayer(gameSession, 0, timeoutMsg);
+		sendToPlayer(gameSession, 1, timeoutMsg);
+
+		// Play again prompt
+		sendToPlayer(gameSession, 0, gameSession.buildPlayAgainPromptMessage());
+		sendToPlayer(gameSession, 1, gameSession.buildPlayAgainPromptMessage());
 	}
 
 	// --- Sending Helpers ---
 
-	/**
-	 * Sends an encrypted JSON message to a specific player in a game session.
-	 */
 	private void sendToPlayer(GameSession gameSession, int playerIndex, JsonObject payload) {
 		String wsSessionId = gameSession.getSessionKey(playerIndex);
 		if (wsSessionId == null)
@@ -357,9 +468,6 @@ public class GameServerEndpoint {
 		sendEncrypted(wsSession, wsSessionId, payload);
 	}
 
-	/**
-	 * Encrypts a JSON payload with the session's AES key and sends it.
-	 */
 	private void sendEncrypted(Session wsSession, String wsSessionId, JsonObject payload) {
 		try {
 			SecretKey aesKey = SESSION_AES_KEYS.get(wsSessionId);
@@ -378,9 +486,6 @@ public class GameServerEndpoint {
 		}
 	}
 
-	/**
-	 * Sends a plain (unencrypted) JSON message — only used before handshake.
-	 */
 	private void sendPlainJson(Session wsSession, JsonObject payload) {
 		try {
 			String message = new BoxCodec().encode(new Box(payload));

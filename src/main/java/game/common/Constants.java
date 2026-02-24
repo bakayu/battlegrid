@@ -12,6 +12,7 @@ public final class Constants {
     public static final int SERVER_PORT = 8025;
     public static final String WEBSOCKET_PATH = "/websockets/battlegrid";
     public static final String DEFAULT_USERNAME = "Player";
+    public static final int TURN_TIMEOUT_SECONDS = 60;
 
     // --- Message Types: Server → Client ---
     public static final String MSG_HANDSHAKE_RSA_KEY = "handshake_rsa_key";
@@ -26,11 +27,14 @@ public final class Constants {
     public static final String MSG_GAME_OVER = "game_over";
     public static final String MSG_ERROR = "error";
     public static final String MSG_OPPONENT_DISCONNECTED = "opponent_disconnected";
+    public static final String MSG_PLAY_AGAIN_PROMPT = "play_again_prompt";
+    public static final String MSG_PLAY_AGAIN_WAITING = "play_again_waiting";
 
     // --- Message Types: Client → Server ---
     public static final String MSG_SELECT_MODE = "select_mode";
     public static final String MSG_ATTACK = "attack";
     public static final String MSG_FORFEIT = "forfeit";
+    public static final String MSG_PLAY_AGAIN = "play_again";
 
     // --- Message Log ---
     public static final int MAX_RECENT_MESSAGES = 5;

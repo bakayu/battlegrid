@@ -107,4 +107,29 @@ class GameLobbyTest {
         assertTrue(session3.isPresent());
         assertNotSame(session1.get(), session3.get());
     }
+
+    @Test
+    void testCleanupSession() {
+        GameLobby lobby = new GameLobby();
+        GameLobby.JoinResult r2 = lobby.joinPlayer("ws-2", "Bob");
+
+        GameSession session = r2.session();
+        lobby.cleanupSession(session);
+
+        assertTrue(lobby.getSessionForPlayer("ws-1").isEmpty());
+        assertTrue(lobby.getSessionForPlayer("ws-2").isEmpty());
+    }
+
+    @Test
+    void testRequeuePlayer() {
+        GameLobby lobby = new GameLobby();
+        GameLobby.JoinResult r2 = lobby.joinPlayer("ws-2", "Bob");
+
+        GameSession session = r2.session();
+        lobby.cleanupSession(session);
+
+        GameLobby.JoinResult r3 = lobby.requeuePlayer("ws-1", "Alice");
+        assertFalse(r3.gameReady());
+        assertEquals(0, r3.playerIndex());
+    }
 }

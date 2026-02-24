@@ -1,8 +1,10 @@
 package game.server.game;
 
-// import java.util.ArrayList;
 import java.util.List;
-// import java.util.Map;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,9 +30,21 @@ public class GameSession {
     private static final Logger LOGGER = LoggerFactory.getLogger(GameSession.class);
 
     private final String sessionId;
-    private final GameState gameState;
+    private GameState gameState;
     private final String[] sessionKeys; // WebSocket session IDs
     private GameMode[] modeVotes; // Each player's mode vote
+
+    // Play again
+    private final Boolean[] playAgainVotes = new Boolean[2];
+
+    // Turn timeout
+    private static final ScheduledExecutorService TIMER_POOL = new ScheduledThreadPoolExecutor(2, r -> {
+        Thread t = new Thread(r, "turn-timer");
+        t.setDaemon(true);
+        return t;
+    });
+    private ScheduledFuture<?> turnTimeoutFuture;
+    private Runnable onTurnTimeout; // callback set by the endpoint
 
     public GameSession(String sessionId) {
         this.sessionId = sessionId;
@@ -51,7 +65,7 @@ public class GameSession {
 
     /**
      * Adds a player to this session.
-     * 
+     *
      * @return player index (0 or 1), or -1 if full
      */
     public int addPlayer(String wsSessionId, String username) {
@@ -120,12 +134,90 @@ public class GameSession {
 
     /**
      * Processes an attack from a player.
-     * 
+     *
      * @return the AttackResult, or null if invalid
      */
     public AttackResult processAttack(int playerIndex, WeaponType weapon,
             Coordinate target, Direction direction) {
+        cancelTurnTimeout();
         return gameState.executeAttack(playerIndex, weapon, target, direction);
+    }
+
+    // --- Turn Timeout ---
+
+    /**
+     * Sets a callback to be invoked when a turn times out.
+     */
+    public void setOnTurnTimeout(Runnable callback) {
+        this.onTurnTimeout = callback;
+    }
+
+    /**
+     * Starts the turn timeout timer. When it fires, the current player forfeits.
+     */
+    public void startTurnTimeout() {
+        cancelTurnTimeout();
+        turnTimeoutFuture = TIMER_POOL.schedule(() -> {
+            LOGGER.info("Session {}: Turn timeout for player {}",
+                    sessionId, gameState.getCurrentTurnIndex());
+            if (onTurnTimeout != null) {
+                onTurnTimeout.run();
+            }
+        }, Constants.TURN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Cancels the current turn timeout timer.
+     */
+    public void cancelTurnTimeout() {
+        if (turnTimeoutFuture != null && !turnTimeoutFuture.isDone()) {
+            turnTimeoutFuture.cancel(false);
+            turnTimeoutFuture = null;
+        }
+    }
+
+    // --- Play Again ---
+
+    /**
+     * Records a play-again vote.
+     *
+     * @return null if waiting for other player, true if both want to play again,
+     *         false if either declined
+     */
+    public Boolean votePlayAgain(int playerIndex, boolean wantsToPlay) {
+        playAgainVotes[playerIndex] = wantsToPlay;
+        LOGGER.info("Player {} voted play again: {}", playerIndex, wantsToPlay);
+
+        if (playAgainVotes[0] != null && playAgainVotes[1] != null) {
+            return playAgainVotes[0] && playAgainVotes[1];
+        }
+        return null; // still waiting
+    }
+
+    /**
+     * Resets the session for a new game (same players).
+     */
+    public void resetForNewGame() {
+        String username0 = gameState.getPlayer(0).getUsername();
+        String username1 = gameState.getPlayer(1).getUsername();
+
+        this.gameState = new GameState();
+        gameState.addPlayer(username0);
+        gameState.addPlayer(username1);
+
+        this.modeVotes = new GameMode[2];
+        this.playAgainVotes[0] = null;
+        this.playAgainVotes[1] = null;
+
+        LOGGER.info("Session {} reset for new game: {} vs {}",
+                sessionId, username0, username1);
+    }
+
+    /**
+     * Returns true if the game is over.
+     */
+    public boolean isGameOver() {
+        return gameState.getPhase() == GameState.Phase.GAME_OVER;
     }
 
     // --- JSON Message Builders ---
@@ -193,6 +285,7 @@ public class GameSession {
         JsonObject payload = new JsonObject();
         payload.addProperty("type", Constants.MSG_YOUR_TURN);
         payload.addProperty("turnNumber", gameState.getTurnNumber());
+        payload.addProperty("timeoutSeconds", Constants.TURN_TIMEOUT_SECONDS);
 
         // Available weapons
         List<WeaponType> available = player.getCooldownManager().getAvailableWeapons(player.getBoard());
@@ -381,6 +474,26 @@ public class GameSession {
     }
 
     /**
+     * Builds the play-again prompt message.
+     */
+    public JsonObject buildPlayAgainPromptMessage() {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("type", Constants.MSG_PLAY_AGAIN_PROMPT);
+        payload.addProperty("message", "Play again? (yes/no)");
+        return payload;
+    }
+
+    /**
+     * Builds the play-again waiting message.
+     */
+    public JsonObject buildPlayAgainWaitingMessage() {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("type", Constants.MSG_PLAY_AGAIN_WAITING);
+        payload.addProperty("message", "Waiting for opponent's decision...");
+        return payload;
+    }
+
+    /**
      * Builds an error message.
      */
     public static JsonObject buildErrorMessage(String message) {
@@ -432,7 +545,7 @@ public class GameSession {
 
     /**
      * Serializes a board to JSON.
-     * 
+     *
      * @param board    the board to serialize
      * @param fullView if true, shows all cell states (own board);
      *                 if false, hides SHIP cells as EMPTY (enemy tracking view)
