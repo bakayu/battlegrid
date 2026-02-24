@@ -12,6 +12,12 @@ Two players connect to a central server, deploy ships on a grid, and take turns 
 - **Cooldown system** — Powerful weapons have turn-based cooldowns
 - **Terminal UI** — Entire game runs in the terminal with ASCII grid rendering
 
+## Screenshots 
+
+![Screenshot 1](./docs/assets/images/ss1.png)
+
+![Screenshot 2](./docs/assets/images/ss2.png)
+
 ## Prerequisites
 
 - **Java 21+**
