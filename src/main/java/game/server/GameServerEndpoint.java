@@ -1,13 +1,9 @@
 package game.server;
 
-import java.io.IOException;
 import java.security.KeyPair;
-import java.security.PrivateKey;
-import java.security.PublicKey;
 import java.util.Base64;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.crypto.SecretKey;
 
@@ -15,11 +11,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import game.common.Box;
 import game.common.BoxCodec;
 import game.common.Constants;
 import game.common.CryptoUtils;
+import game.common.model.Coordinate;
+import game.common.model.Direction;
+import game.common.model.GameMode;
+import game.common.model.WeaponType;
+import game.server.game.AttackResult;
+import game.server.game.GameLobby;
+import game.server.game.GameSession;
+import game.server.game.GameState;
 import jakarta.websocket.OnClose;
 import jakarta.websocket.OnError;
 import jakarta.websocket.OnMessage;
@@ -27,192 +32,472 @@ import jakarta.websocket.OnOpen;
 import jakarta.websocket.Session;
 import jakarta.websocket.server.ServerEndpoint;
 
-@ServerEndpoint(value = "/battlegrid", decoders = { BoxCodec.class })
+@ServerEndpoint("/battlegrid")
 public class GameServerEndpoint {
-
-	private static final Set<Session> sessions = Collections.synchronizedSet(new HashSet<>());
-	private static PrivateKey rsaPrivateKey;
-	private static PublicKey rsaPublicKey;
 
 	private static final Logger LOGGER = LoggerFactory.getLogger(GameServerEndpoint.class);
 
-	// Static initializer block to generate the server's RSA key pair.
+	// Shared across all endpoint instances
+	private static final GameLobby LOBBY = new GameLobby();
+	private static final Map<String, SecretKey> SESSION_AES_KEYS = new ConcurrentHashMap<>();
+	private static final Map<String, Session> ACTIVE_SESSIONS = new ConcurrentHashMap<>();
+	private static final Map<String, Boolean> HANDSHAKE_COMPLETE = new ConcurrentHashMap<>();
+	private static final Map<String, String> SESSION_USERNAMES = new ConcurrentHashMap<>();
+
+	// RSA key pair for handshake (one per server instance)
+	private static final KeyPair RSA_KEY_PAIR;
+
 	static {
 		try {
-			KeyPair keyPair = CryptoUtils.generateRSAKeyPair();
-			rsaPrivateKey = keyPair.getPrivate();
-			rsaPublicKey = keyPair.getPublic();
-			LOGGER.info("Server RSA KeyPair generated successfully.");
+			RSA_KEY_PAIR = CryptoUtils.generateRSAKeyPair();
 		} catch (Exception e) {
-			LOGGER.error("Failed to generate server RSA key pair", e);
-			throw new RuntimeException("Failed to generate server RSA key pair", e);
+			throw new RuntimeException("Failed to generate RSA key pair", e);
 		}
 	}
 
-	/**
-	 * Called when a new WebSocket connection is opened. Initiates handshake by
-	 * sending
-	 * the server's public RSA key to the client.
-	 * 
-	 * @param session The WebSocket session for the connecting client.
-	 */
 	@OnOpen
 	public void onOpen(Session session) {
-		LOGGER.info("New connection attempt from Session ID: {}", session.getId());
-		// Start the handshake by sending the server's public RSA key to the client.
-		try {
-			JsonObject handshakePayload = new JsonObject();
-			handshakePayload.addProperty("type", "handshake_rsa_key");
-			handshakePayload.addProperty("publicKey", CryptoUtils.keyToString(rsaPublicKey));
+		String sessionId = session.getId();
+		ACTIVE_SESSIONS.put(sessionId, session);
+		HANDSHAKE_COMPLETE.put(sessionId, false);
+		LOGGER.info("New connection: {}", sessionId);
 
-			Box handshakeBox = new Box(handshakePayload);
-			// Use a plain text encoder for the initial handshake message
-			session.getBasicRemote().sendText(new BoxCodec().encode(handshakeBox));
-			LOGGER.info("Sent RSA public key to session {}", session.getId());
+		// Send RSA public key for handshake
+		try {
+			JsonObject payload = new JsonObject();
+			payload.addProperty("type", Constants.MSG_HANDSHAKE_RSA_KEY);
+			payload.addProperty("publicKey",
+					CryptoUtils.publicKeyToString(RSA_KEY_PAIR.getPublic()));
+
+			String message = new BoxCodec().encode(new Box(payload));
+			session.getBasicRemote().sendText(message);
+			LOGGER.info("Sent RSA public key to {}", sessionId);
 		} catch (Exception e) {
-			LOGGER.error("Handshake failed for session {}", session.getId(), e);
-			try {
-				session.close();
-			} catch (IOException ioException) {
-				LOGGER.warn("Failed to close session {}", session.getId(), ioException);
-			}
+			LOGGER.error("Failed to send handshake to {}", sessionId, e);
 		}
 	}
 
-	/**
-	 * Called when a message is received from a client. Handles handshake response
-	 * if AES key is not set, otherwise processes game messages.
-	 * 
-	 * @param rawMessage The raw message received from the client.
-	 * @param session    The WebSocket session for the client.
-	 */
 	@OnMessage
-	public void onMessage(String rawMessage, Session session) {
-		// Check if the session has an AES key. If not, this must be the handshake
-		// response.
-		if (session.getUserProperties().get(Constants.PROPERTY_AES_KEY) == null) {
-			try {
-				Box handshakeBox = new BoxCodec().decode(rawMessage);
-				handleHandshakeResponse(handshakeBox, session);
-			} catch (Exception e) {
-				LOGGER.error("Handshake failed due to invalid message format from {}", session.getId(), e);
-				try {
-					session.close();
-				} catch (IOException ioException) {
-					LOGGER.warn("Failed to close session during handshake failure cleanup {}", session.getId(),
-							ioException);
-				}
+	public void onMessage(String message, Session session) {
+		String sessionId = session.getId();
+
+		try {
+			if (!Boolean.TRUE.equals(HANDSHAKE_COMPLETE.get(sessionId))) {
+				handleHandshake(message, session);
+			} else {
+				handleGameMessage(message, session);
 			}
-		} else {
-			handleGameMessage(rawMessage, session);
-		}
-	}
-
-	/**
-	 * Handles the handshake response from a client. It expects a Box containing
-	 * the username and the RSA-encrypted AES key. It decrypts the AES key,
-	 * stores it and the username in the session, and notifies all players on
-	 * successful handshake.
-	 * 
-	 * @param handshakeBox The Box containing the handshake data.
-	 * @param session      The WebSocket session for the client.
-	 */
-	private void handleHandshakeResponse(Box handshakeBox, Session session) {
-		try {
-			JsonObject payload = handshakeBox.getPayload();
-			// The client is expected to send its chosen username and the AES key
-			// encrypted with the server's public RSA key.
-			String encryptedAesKeyString = payload.get("encryptedAesKey").getAsString();
-			String username = payload.get("username").getAsString();
-
-			// Decrypt the AES key sent from the client using our private RSA key.
-			byte[] encryptedAesKey = Base64.getDecoder().decode(encryptedAesKeyString);
-			byte[] decryptedAesKeyBytes = CryptoUtils.rsaDecrypt(encryptedAesKey, rsaPrivateKey);
-			SecretKey aesKey = CryptoUtils.stringToAesKey(new String(Base64.getEncoder().encode(decryptedAesKeyBytes)));
-
-			// Store the AES key and the chosen username in the session's properties.
-			session.getUserProperties().put(Constants.PROPERTY_AES_KEY, aesKey);
-			session.getUserProperties().put(Constants.PROPERTY_USERNAME, username);
-
-			sessions.add(session);
-			LOGGER.info("Handshake complete for session {}. User: {}", session.getId(), username);
-
-			// Notify all players that a new user has joined.
-			JsonObject joinPayload = new JsonObject();
-			joinPayload.addProperty("type", "player_joined");
-			joinPayload.addProperty("message", username + " has joined the battlegrid.");
-			joinPayload.addProperty(Constants.PROPERTY_USERNAME, username);
-			broadcast(new Box(joinPayload));
-
 		} catch (Exception e) {
-			LOGGER.error("AES key exchange or username setup failed for session {}", session.getId(), e);
-		}
-	}
-
-	/**
-	 * Processes an incoming encrypted game message from a client, decrypts it,
-	 * adds sender info, and broadcasts it to all players.
-	 * 
-	 * @param encryptedMessage The encrypted message from the client.
-	 * @param session          The WebSocket session for the client.
-	 */
-	private void handleGameMessage(String encryptedMessage, Session session) {
-		try {
-			SecretKey aesKey = (SecretKey) session.getUserProperties().get(Constants.PROPERTY_AES_KEY);
-			byte[] decryptedBytes = CryptoUtils.aesDecrypt(Base64.getDecoder().decode(encryptedMessage), aesKey);
-			String decryptedJson = new String(decryptedBytes);
-
-			Box incomingBox = new BoxCodec().decode(decryptedJson);
-			JsonObject payload = incomingBox.getPayload();
-			String username = (String) session.getUserProperties().get(Constants.PROPERTY_USERNAME);
-
-			LOGGER.info("Message from {}: {}", username, payload);
-			payload.addProperty("sender", username); // Add sender info
-
-			broadcast(new Box(payload));
-		} catch (Exception e) {
-			LOGGER.error("Failed to process game message for session {}", session.getId(), e);
+			LOGGER.error("Error processing message from {}", sessionId, e);
+			sendPlainJson(session, GameSession.buildErrorMessage("Internal server error."));
 		}
 	}
 
 	@OnClose
 	public void onClose(Session session) {
-		sessions.remove(session);
-		String username = (String) session.getUserProperties().getOrDefault(Constants.PROPERTY_USERNAME, "A player");
-		LOGGER.info("Connection closed for: {}", username);
+		String sessionId = session.getId();
+		LOGGER.info("Connection closed: {}", sessionId);
 
-		JsonObject leavePayload = new JsonObject();
-		leavePayload.addProperty("type", "player_left");
-		leavePayload.addProperty("message", username + " has left the battlegrid.");
-		leavePayload.addProperty(Constants.PROPERTY_USERNAME, username);
-		broadcast(new Box(leavePayload));
+		LOBBY.getSessionForPlayer(sessionId).ifPresent(gameSession -> {
+			int playerIndex = gameSession.getPlayerIndex(sessionId);
+			int opponentIndex = 1 - playerIndex;
+			String opponentSessionKey = gameSession.getSessionKey(opponentIndex);
+			String username = SESSION_USERNAMES.getOrDefault(sessionId, "Opponent");
+
+			boolean wasInProgress = gameSession.getGameState().getPhase() == GameState.Phase.IN_PROGRESS;
+
+			LOBBY.removePlayer(sessionId);
+
+			// Notify opponent
+			if (opponentSessionKey != null) {
+				Session opponentWsSession = ACTIVE_SESSIONS.get(opponentSessionKey);
+				if (opponentWsSession != null && opponentWsSession.isOpen()) {
+					sendEncrypted(opponentWsSession, opponentSessionKey,
+							GameSession.buildOpponentDisconnectedMessage(username));
+
+					// If game was in progress, send game over to the remaining player
+					if (wasInProgress) {
+						sendEncrypted(opponentWsSession, opponentSessionKey,
+								gameSession.buildGameOverMessage(opponentIndex));
+					}
+				}
+			}
+
+			// Clean up session if game is over
+			if (gameSession.getGameState().getPhase() == GameState.Phase.GAME_OVER) {
+				LOBBY.cleanupSession(gameSession);
+			}
+		});
+
+		// Cleanup connection state
+		SESSION_AES_KEYS.remove(sessionId);
+		ACTIVE_SESSIONS.remove(sessionId);
+		HANDSHAKE_COMPLETE.remove(sessionId);
+		SESSION_USERNAMES.remove(sessionId);
 	}
 
 	@OnError
 	public void onError(Session session, Throwable throwable) {
-		LOGGER.error("Error for session {}: {}", session.getId(), throwable.getMessage(), throwable);
-		sessions.remove(session);
+		LOGGER.error("WebSocket error for session {}: {}",
+				session.getId(), throwable.getMessage(), throwable);
 	}
 
-	/**
-	 * Broadcasts a message box to all connected sessions, encrypting the payload
-	 * with each client's unique AES key.
-	 * 
-	 * @param box The message box to broadcast.
-	 */
-	private void broadcast(Box box) {
-		sessions.forEach(session -> {
-			try {
-				// Encrypt the message with each client's unique AES key before sending
-				SecretKey aesKey = (SecretKey) session.getUserProperties().get(Constants.PROPERTY_AES_KEY);
-				if (aesKey != null) {
-					String jsonPayload = new BoxCodec().encode(box);
-					byte[] encryptedPayload = CryptoUtils.aesEncrypt(jsonPayload.getBytes(), aesKey);
-					session.getBasicRemote().sendText(Base64.getEncoder().encodeToString(encryptedPayload));
-				}
-			} catch (Exception e) {
-				LOGGER.error("Failed to broadcast to session {}", session.getId(), e);
+	// --- Handshake ---
+
+	private void handleHandshake(String message, Session session) throws Exception {
+		String sessionId = session.getId();
+
+		// Client sends: { username, encryptedAesKey }
+		Box box = new BoxCodec().decode(message);
+		JsonObject payload = box.getPayload();
+
+		String username = payload.has("username") ? payload.get("username").getAsString() : "Player";
+		String encryptedAesKeyStr = payload.get("encryptedAesKey").getAsString();
+
+		// Decrypt the AES key with our RSA private key
+		byte[] encryptedAesKey = Base64.getDecoder().decode(encryptedAesKeyStr);
+		byte[] aesKeyBytes = CryptoUtils.rsaDecrypt(encryptedAesKey, RSA_KEY_PAIR.getPrivate());
+		SecretKey aesKey = CryptoUtils.bytesToAesKey(aesKeyBytes);
+
+		SESSION_AES_KEYS.put(sessionId, aesKey);
+		SESSION_USERNAMES.put(sessionId, username);
+		HANDSHAKE_COMPLETE.put(sessionId, true);
+
+		LOGGER.info("Handshake complete with {} ({})", username, sessionId);
+
+		// Send handshake confirmation
+		JsonObject confirmPayload = new JsonObject();
+		confirmPayload.addProperty("type", Constants.MSG_HANDSHAKE_COMPLETE);
+		confirmPayload.addProperty("message", "Welcome, " + username + "!");
+		sendEncrypted(session, sessionId, confirmPayload);
+
+		// Join the lobby
+		joinLobby(session, sessionId, username);
+	}
+
+	// --- Lobby ---
+
+	private void joinLobby(Session session, String sessionId, String username) {
+		GameLobby.JoinResult result = LOBBY.joinPlayer(sessionId, username);
+		GameSession gameSession = result.session();
+
+		if (!result.gameReady()) {
+			// First player — wait for opponent
+			sendEncrypted(session, sessionId, gameSession.buildLobbyWaitingMessage());
+			LOGGER.info("{} is waiting for an opponent in session {}",
+					username, gameSession.getSessionId());
+		} else {
+			// Second player — both are ready, start mode selection
+			LOGGER.info("Session {} is full. Starting mode selection.", gameSession.getSessionId());
+			sendModeSelectToBoth(gameSession);
+		}
+	}
+
+	private void sendModeSelectToBoth(GameSession gameSession) {
+		String player0SessionKey = gameSession.getSessionKey(0);
+		String player1SessionKey = gameSession.getSessionKey(1);
+		Session player0Session = ACTIVE_SESSIONS.get(player0SessionKey);
+		Session player1Session = ACTIVE_SESSIONS.get(player1SessionKey);
+
+		String player0Name = gameSession.getGameState().getPlayer(0).getUsername();
+		String player1Name = gameSession.getGameState().getPlayer(1).getUsername();
+
+		if (player0Session != null) {
+			sendEncrypted(player0Session, player0SessionKey,
+					gameSession.buildModeSelectMessage(player1Name));
+		}
+		if (player1Session != null) {
+			sendEncrypted(player1Session, player1SessionKey,
+					gameSession.buildModeSelectMessage(player0Name));
+		}
+	}
+
+	// --- Game Message Routing ---
+
+	private void handleGameMessage(String message, Session session) throws Exception {
+		String sessionId = session.getId();
+
+		// Decrypt the message
+		SecretKey aesKey = SESSION_AES_KEYS.get(sessionId);
+		byte[] encryptedBytes = Base64.getDecoder().decode(message);
+		byte[] decryptedBytes = CryptoUtils.aesDecrypt(encryptedBytes, aesKey);
+		String jsonString = new String(decryptedBytes);
+
+		JsonObject payload = JsonParser.parseString(jsonString).getAsJsonObject();
+		// Also try Box format
+		if (payload.has("payload")) {
+			payload = payload.getAsJsonObject("payload");
+		}
+
+		String type = payload.get("type").getAsString();
+
+		GameSession gameSession = LOBBY.getSessionForPlayer(sessionId).orElse(null);
+		if (gameSession == null) {
+			// Player not in any session — might be after a cleanup
+			// Try to re-queue them if they sent play_again
+			if (Constants.MSG_PLAY_AGAIN.equals(type)) {
+				String username = SESSION_USERNAMES.getOrDefault(sessionId, "Player");
+				joinLobby(session, sessionId, username);
+				return;
 			}
-		});
+			sendEncrypted(session, sessionId,
+					GameSession.buildErrorMessage("You are not in a game session."));
+			return;
+		}
+
+		int playerIndex = gameSession.getPlayerIndex(sessionId);
+
+		switch (type) {
+			case Constants.MSG_SELECT_MODE -> handleModeSelect(gameSession, playerIndex, payload);
+			case Constants.MSG_ATTACK -> handleAttack(gameSession, playerIndex, payload);
+			case Constants.MSG_FORFEIT -> handleForfeit(gameSession, playerIndex);
+			case Constants.MSG_PLAY_AGAIN -> handlePlayAgain(gameSession, playerIndex, payload);
+			default -> {
+				LOGGER.warn("Unknown message type from {}: {}", sessionId, type);
+				sendEncrypted(session, sessionId,
+						GameSession.buildErrorMessage("Unknown message type: " + type));
+			}
+		}
+	}
+
+	private void handleModeSelect(GameSession gameSession, int playerIndex, JsonObject payload) {
+		String modeName = payload.get("mode").getAsString();
+		GameMode mode;
+		try {
+			mode = GameMode.valueOf(modeName.toUpperCase());
+		} catch (IllegalArgumentException e) {
+			sendToPlayer(gameSession, playerIndex,
+					GameSession.buildErrorMessage("Invalid game mode: " + modeName));
+			return;
+		}
+
+		GameMode resolvedMode = gameSession.voteMode(playerIndex, mode);
+
+		if (resolvedMode != null) {
+			// Both voted — start the game
+			LOGGER.info("Session {}: Mode resolved to {}",
+					gameSession.getSessionId(), resolvedMode.getDisplayName());
+
+			gameSession.startGame(resolvedMode);
+
+			// Send game_start to both players
+			sendToPlayer(gameSession, 0, gameSession.buildGameStartMessage(0));
+			sendToPlayer(gameSession, 1, gameSession.buildGameStartMessage(1));
+
+			// Send turn messages and start timeout
+			sendTurnMessages(gameSession);
+		}
+		// If only one has voted, they just wait
+	}
+
+	private void handleAttack(GameSession gameSession, int playerIndex, JsonObject payload) {
+		// Parse weapon
+		String weaponName = payload.get("weapon").getAsString();
+		WeaponType weapon;
+		try {
+			weapon = WeaponType.valueOf(weaponName.toUpperCase());
+		} catch (IllegalArgumentException e) {
+			sendToPlayer(gameSession, playerIndex,
+					GameSession.buildErrorMessage("Invalid weapon: " + weaponName));
+			return;
+		}
+
+		// Parse target
+		String targetStr = payload.get("target").getAsString();
+		Coordinate target;
+		try {
+			target = Coordinate.fromInput(targetStr);
+		} catch (IllegalArgumentException e) {
+			sendToPlayer(gameSession, playerIndex,
+					GameSession.buildErrorMessage("Invalid target: " + targetStr));
+			return;
+		}
+
+		// Parse direction (optional, for LINE_BARRAGE)
+		Direction direction = Direction.HORIZONTAL;
+		if (payload.has("direction")) {
+			try {
+				direction = Direction.valueOf(payload.get("direction").getAsString().toUpperCase());
+			} catch (IllegalArgumentException e) {
+				// Default to horizontal
+			}
+		}
+
+		// Execute the attack
+		AttackResult result = gameSession.processAttack(playerIndex, weapon, target, direction);
+
+		if (result == null) {
+			sendToPlayer(gameSession, playerIndex,
+					GameSession.buildErrorMessage(
+							"Invalid attack. Check turn order, weapon availability, and coordinates."));
+			return;
+		}
+
+		int defenderIndex = 1 - playerIndex;
+
+		// Send results to both players
+		sendToPlayer(gameSession, playerIndex,
+				gameSession.buildAttackResultMessage(result, playerIndex));
+		sendToPlayer(gameSession, defenderIndex,
+				gameSession.buildIncomingAttackMessage(result, defenderIndex));
+
+		// Check game over
+		if (result.isGameOver()) {
+			sendToPlayer(gameSession, 0, gameSession.buildGameOverMessage(0));
+			sendToPlayer(gameSession, 1, gameSession.buildGameOverMessage(1));
+
+			// Send play-again prompt after a short delay
+			sendToPlayer(gameSession, 0, gameSession.buildPlayAgainPromptMessage());
+			sendToPlayer(gameSession, 1, gameSession.buildPlayAgainPromptMessage());
+		} else {
+			// Send turn messages for the next turn
+			sendTurnMessages(gameSession);
+		}
+	}
+
+	private void handleForfeit(GameSession gameSession, int playerIndex) {
+		gameSession.cancelTurnTimeout();
+		gameSession.getGameState().forfeit(playerIndex);
+
+		sendToPlayer(gameSession, 0, gameSession.buildGameOverMessage(0));
+		sendToPlayer(gameSession, 1, gameSession.buildGameOverMessage(1));
+
+		// Play again prompt
+		sendToPlayer(gameSession, 0, gameSession.buildPlayAgainPromptMessage());
+		sendToPlayer(gameSession, 1, gameSession.buildPlayAgainPromptMessage());
+	}
+
+	private void handlePlayAgain(GameSession gameSession, int playerIndex, JsonObject payload) {
+		boolean wantsToPlay = payload.has("answer") && payload.get("answer").getAsBoolean();
+
+		Boolean result = gameSession.votePlayAgain(playerIndex, wantsToPlay);
+
+		if (result == null) {
+			// Waiting for opponent
+			sendToPlayer(gameSession, playerIndex, gameSession.buildPlayAgainWaitingMessage());
+		} else if (result) {
+			// Both want to play again — reset and go to mode select
+			LOGGER.info("Session {}: Both players want to play again!", gameSession.getSessionId());
+			gameSession.resetForNewGame();
+			sendModeSelectToBoth(gameSession);
+		} else {
+			// At least one declined
+			LOGGER.info("Session {}: Play again declined.", gameSession.getSessionId());
+
+			// Find who wants to keep playing and re-queue them
+			for (int i = 0; i < 2; i++) {
+				String wsKey = gameSession.getSessionKey(i);
+				Session ws = wsKey != null ? ACTIVE_SESSIONS.get(wsKey) : null;
+				if (ws != null && ws.isOpen()) {
+					// Notify that the opponent declined
+					JsonObject msg = new JsonObject();
+					msg.addProperty("type", Constants.MSG_OPPONENT_DISCONNECTED);
+					msg.addProperty("message", "Opponent left. Returning to lobby...");
+					sendEncrypted(ws, wsKey, msg);
+				}
+			}
+
+			// Clean up session
+			LOBBY.cleanupSession(gameSession);
+
+			// Re-queue players who wanted to play
+			for (int i = 0; i < 2; i++) {
+				String wsKey = gameSession.getSessionKey(i);
+				if (wsKey != null) {
+					Session ws = ACTIVE_SESSIONS.get(wsKey);
+					String username = SESSION_USERNAMES.getOrDefault(wsKey, "Player");
+					if (ws != null && ws.isOpen()) {
+						joinLobby(ws, wsKey, username);
+					}
+				}
+			}
+		}
+	}
+
+	// --- Turn Management ---
+
+	private void sendTurnMessages(GameSession gameSession) {
+		int currentTurn = gameSession.getGameState().getCurrentTurnIndex();
+		sendToPlayer(gameSession, currentTurn, gameSession.buildYourTurnMessage(currentTurn));
+		sendToPlayer(gameSession, 1 - currentTurn, gameSession.buildWaitTurnMessage(1 - currentTurn));
+
+		// Start turn timeout
+		gameSession.setOnTurnTimeout(() -> handleTurnTimeout(gameSession));
+		gameSession.startTurnTimeout();
+	}
+
+	private synchronized void handleTurnTimeout(GameSession gameSession) {
+		if (gameSession.getGameState().getPhase() != GameState.Phase.IN_PROGRESS) {
+			return;
+		}
+
+		int timedOutPlayer = gameSession.getGameState().getCurrentTurnIndex();
+		String username = gameSession.getGameState().getPlayer(timedOutPlayer).getUsername();
+
+		LOGGER.info("Session {}: {} timed out, forfeiting.", gameSession.getSessionId(), username);
+
+		gameSession.getGameState().forfeit(timedOutPlayer);
+
+		// Notify both
+		sendToPlayer(gameSession, 0, gameSession.buildGameOverMessage(0));
+		sendToPlayer(gameSession, 1, gameSession.buildGameOverMessage(1));
+
+		// Send timeout notice
+		JsonObject timeoutMsg = new JsonObject();
+		timeoutMsg.addProperty("type", Constants.MSG_ERROR);
+		timeoutMsg.addProperty("message", username + " ran out of time!");
+		sendToPlayer(gameSession, 0, timeoutMsg);
+		sendToPlayer(gameSession, 1, timeoutMsg);
+
+		// Play again prompt
+		sendToPlayer(gameSession, 0, gameSession.buildPlayAgainPromptMessage());
+		sendToPlayer(gameSession, 1, gameSession.buildPlayAgainPromptMessage());
+	}
+
+	// --- Sending Helpers ---
+
+	private void sendToPlayer(GameSession gameSession, int playerIndex, JsonObject payload) {
+		String wsSessionId = gameSession.getSessionKey(playerIndex);
+		if (wsSessionId == null)
+			return;
+
+		Session wsSession = ACTIVE_SESSIONS.get(wsSessionId);
+		if (wsSession == null || !wsSession.isOpen())
+			return;
+
+		sendEncrypted(wsSession, wsSessionId, payload);
+	}
+
+	private void sendEncrypted(Session wsSession, String wsSessionId, JsonObject payload) {
+		try {
+			SecretKey aesKey = SESSION_AES_KEYS.get(wsSessionId);
+			if (aesKey == null) {
+				LOGGER.warn("No AES key for session {}, sending plain", wsSessionId);
+				sendPlainJson(wsSession, payload);
+				return;
+			}
+
+			String json = payload.toString();
+			byte[] encrypted = CryptoUtils.aesEncrypt(json.getBytes(), aesKey);
+			String encoded = Base64.getEncoder().encodeToString(encrypted);
+			wsSession.getBasicRemote().sendText(encoded);
+		} catch (Exception e) {
+			LOGGER.error("Failed to send encrypted message to {}", wsSessionId, e);
+		}
+	}
+
+	private void sendPlainJson(Session wsSession, JsonObject payload) {
+		try {
+			String message = new BoxCodec().encode(new Box(payload));
+			wsSession.getBasicRemote().sendText(message);
+		} catch (Exception e) {
+			LOGGER.error("Failed to send plain message to {}", wsSession.getId(), e);
+		}
+	}
+
+	// --- For testing ---
+
+	static GameLobby getLobby() {
+		return LOBBY;
 	}
 }
